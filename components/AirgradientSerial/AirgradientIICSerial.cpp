@@ -51,7 +51,10 @@ bool AirgradientIICSerial::begin(int baud, int iicResetIO) {
 }
 
 void AirgradientIICSerial::end() {
-  // TODO: Implement!
+  if (isInitialized) {
+    _iicSerial.end();
+    isInitialized = false;
+  }
 }
 
 int AirgradientIICSerial::available() { return _iicSerial.available(); }
