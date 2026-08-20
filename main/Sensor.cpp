@@ -18,7 +18,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
-#include <cmath>
 
 // RTC memory variable to store CO2 measurement samples configuration status
 RTC_DATA_ATTR static uint8_t rtc_samples_configured = 0;
@@ -123,52 +122,26 @@ bool Sensor::init(Configuration::Model model, int co2ABCDays) {
     _alphaSenseTempAvailable = false;
   }
 
-  // PMS 1
+  // PM sensor 1
   agsPM1_ = new AirgradientIICSerial(_busHandle, SUBUART_CHANNEL_1, 0, 1);
-  if (agsPM1_->begin(9600) == false) {
-    ESP_LOGE(TAG, "Failed open serial for PM sensor 1");
-    _pms1Available = false;
-  } else {
-    pms1_ = new PMS(agsPM1_);
-    // NOTE: Since UART, need to check if its actually able to communicate?
-  }
+  _pm1Available = _initPMChannel(1, agsPM1_, pms1_, sps1_, _pm1Type);
 
-  // PMS 2
+  // PM sensor 2
   agsPM2_ = new AirgradientIICSerial(_busHandle, SUBUART_CHANNEL_2, 0, 1);
-  if (agsPM2_->begin(9600) == false) {
-    ESP_LOGE(TAG, "Failed open serial for PM sensor 2");
-    _pms2Available = false;
-  } else {
-    pms2_ = new PMS(agsPM2_);
-  }
+  _pm2Available = _initPMChannel(2, agsPM2_, pms2_, sps2_, _pm2Type);
 
-  // Warm up SGP41 and PMS
+  // Warm up SGP41 and PM sensors
   _warmUpSensor();
-
-  // Ensure PMS1 is available since the sensor using UART
-  ESP_LOGI(TAG, "Checking PM sensor connection");
-  if (_pms1Available) {
-    if (pms1_->isConnected() == false) {
-      ESP_LOGE(TAG, "PMS1 is not connected");
-      _pms1Available = false;
-    }
-  }
-  if (_pms2Available) {
-    if (pms2_->isConnected() == false) {
-      ESP_LOGE(TAG, "PMS2 is not connected");
-      _pms2Available = false;
-    }
-  }
 
   ESP_LOGI(TAG, "Initialize finish");
 
   if (model == Configuration::O_M_1PPSTON_CE) {
-    return (_co2Available && _pms1Available && _pms2Available && _chargerAvailable &&
+    return (_co2Available && _pm1Available && _pm2Available && _chargerAvailable &&
             _tvocNoxAvailable && _tempHumAvailable && _alphaSenseGasAvailable &&
             _alphaSenseTempAvailable);
 
   } else {
-    return (_co2Available && _pms1Available && _pms2Available && _chargerAvailable &&
+    return (_co2Available && _pm1Available && _pm2Available && _chargerAvailable &&
             _tvocNoxAvailable && _tempHumAvailable);
   }
 }
@@ -370,7 +343,6 @@ void Sensor::_measure(int iteration, MaxSensorPayload &data) {
       data.common.rco2 = co2_->read_sensor_measurements();
       ESP_LOGD(TAG, "CO2: %d", data.common.rco2);
     }
-
   }
 
   if (_tempHumAvailable) {
@@ -406,72 +378,51 @@ void Sensor::_measure(int iteration, MaxSensorPayload &data) {
     }
   }
 
-  if (_pms1Available || _pms2Available) {
-    bool pms1ReadSuccess = false;
-    PMS::Data pmData1;
-    if (_pms1Available) {
-      pms1_->clearBuffer();
-      pms1_->requestRead();
-      if (pms1_->readUntil(pmData1, 1000)) {
-        _printPMData(1, pmData1);
-        pms1ReadSuccess = true;
-      } else {
-        ESP_LOGE(TAG, "{1} PMS no data");
-      }
+  if (_pm1Available || _pm2Available) {
+    PMData pmData1;
+    const bool pm1ReadSuccess = _pm1Available && _readPMData(1, pms1_, sps1_, _pm1Type, pmData1);
+
+    PMData pmData2;
+    const bool pm2ReadSuccess = _pm2Available && _readPMData(2, pms2_, sps2_, _pm2Type, pmData2);
+
+    if (pm1ReadSuccess) {
+      data.common.pm25[0] = pmData1.pm25Ae;
+      data.common.pm25Sp[0] = pmData1.pm25Sp;
+      data.common.particleCount003[0] = pmData1.particleCount003;
+    }
+    if (pm2ReadSuccess) {
+      data.common.pm25[1] = pmData2.pm25Ae;
+      data.common.pm25Sp[1] = pmData2.pm25Sp;
+      data.common.particleCount003[1] = pmData2.particleCount003;
     }
 
-    bool pms2ReadSuccess = false;
-    PMS::Data pmData2;
-    if (_pms2Available) {
-      pms2_->clearBuffer();
-      pms2_->requestRead();
-      if (pms2_->readUntil(pmData2, 1000)) {
-        _printPMData(2, pmData2);
-        pms2ReadSuccess = true;
-      } else {
-        ESP_LOGE(TAG, "{2} PMS no data");
-      }
-    }
+    const float pm1Ae = pm1ReadSuccess ? pmData1.pm01Ae : DEFAULT_INVALID_PM;
+    const float pm1Ae2 = pm2ReadSuccess ? pmData2.pm01Ae : DEFAULT_INVALID_PM;
+    data.common.pm01 = _averagePMValue(pm1Ae, pm1Ae2);
 
-    // Average if both success, if not, use only 1 or no data both if both
-    // failed
-    if (pms1ReadSuccess && pms2ReadSuccess) {
-      data.common.pm01 = (pmData1.pm_ae_1_0 + pmData2.pm_ae_1_0) / 2.0f;
-      data.common.pm10 = (pmData1.pm_ae_10_0 + pmData2.pm_ae_10_0) / 2.0f;
-      data.common.pm25[0] = pmData1.pm_ae_2_5;
-      data.common.pm25[1] = pmData2.pm_ae_2_5;
-      data.common.pm25Sp[0] = pmData1.pm_sp_2_5;
-      data.common.pm25Sp[1] = pmData2.pm_sp_2_5;
-      data.common.particleCount003[0] = pmData1.pm_raw_0_3;
-      data.common.particleCount003[1] = pmData2.pm_raw_0_3;
-      data.common.particleCount005 = (pmData1.pm_raw_0_5 + pmData2.pm_raw_0_5) / 2.0f;
-      data.common.particleCount01 = (pmData1.pm_raw_1_0 + pmData2.pm_raw_1_0) / 2.0f;
-      data.common.particleCount02 = (pmData1.pm_raw_2_5 + pmData2.pm_raw_2_5) / 2.0f;
-      data.common.particleCount50 = (pmData1.pm_raw_5_0 + pmData2.pm_raw_5_0) / 2.0f;
-      data.common.particleCount10 = (pmData1.pm_raw_10_0 + pmData2.pm_raw_10_0) / 2.0f;
-    } else if (pms1ReadSuccess) {
-      data.common.pm01 = pmData1.pm_ae_1_0;
-      data.common.pm10 = pmData1.pm_ae_10_0;
-      data.common.pm25[0] = pmData1.pm_ae_2_5;
-      data.common.pm25Sp[0] = pmData1.pm_sp_2_5;
-      data.common.particleCount003[0] = pmData1.pm_raw_0_3;
-      data.common.particleCount005 = pmData1.pm_raw_0_5;
-      data.common.particleCount01 = pmData1.pm_raw_1_0;
-      data.common.particleCount02 = pmData1.pm_raw_2_5;
-      data.common.particleCount50 = pmData1.pm_raw_5_0;
-      data.common.particleCount10 = pmData1.pm_raw_10_0;
-    } else if (pms2ReadSuccess) {
-      data.common.pm01 = pmData2.pm_ae_1_0;
-      data.common.pm10 = pmData2.pm_ae_10_0;
-      data.common.pm25[1] = pmData2.pm_ae_2_5;
-      data.common.pm25Sp[1] = pmData2.pm_sp_2_5;
-      data.common.particleCount003[1] = pmData2.pm_raw_0_3;
-      data.common.particleCount005 = pmData2.pm_raw_0_5;
-      data.common.particleCount01 = pmData2.pm_raw_1_0;
-      data.common.particleCount02 = pmData2.pm_raw_2_5;
-      data.common.particleCount50 = pmData2.pm_raw_5_0;
-      data.common.particleCount10 = pmData2.pm_raw_10_0;
-    }
+    const float pm10Ae = pm1ReadSuccess ? pmData1.pm10Ae : DEFAULT_INVALID_PM;
+    const float pm10Ae2 = pm2ReadSuccess ? pmData2.pm10Ae : DEFAULT_INVALID_PM;
+    data.common.pm10 = _averagePMValue(pm10Ae, pm10Ae2);
+
+    const int particleCount005 = pm1ReadSuccess ? pmData1.particleCount005 : DEFAULT_INVALID_PM;
+    const int particleCount0052 = pm2ReadSuccess ? pmData2.particleCount005 : DEFAULT_INVALID_PM;
+    data.common.particleCount005 = _averagePMValue(particleCount005, particleCount0052);
+
+    const int particleCount01 = pm1ReadSuccess ? pmData1.particleCount01 : DEFAULT_INVALID_PM;
+    const int particleCount012 = pm2ReadSuccess ? pmData2.particleCount01 : DEFAULT_INVALID_PM;
+    data.common.particleCount01 = _averagePMValue(particleCount01, particleCount012);
+
+    const int particleCount02 = pm1ReadSuccess ? pmData1.particleCount02 : DEFAULT_INVALID_PM;
+    const int particleCount022 = pm2ReadSuccess ? pmData2.particleCount02 : DEFAULT_INVALID_PM;
+    data.common.particleCount02 = _averagePMValue(particleCount02, particleCount022);
+
+    const int particleCount50 = pm1ReadSuccess ? pmData1.particleCount50 : DEFAULT_INVALID_PM;
+    const int particleCount502 = pm2ReadSuccess ? pmData2.particleCount50 : DEFAULT_INVALID_PM;
+    data.common.particleCount50 = _averagePMValue(particleCount50, particleCount502);
+
+    const int particleCount10 = pm1ReadSuccess ? pmData1.particleCount10 : DEFAULT_INVALID_PM;
+    const int particleCount102 = pm2ReadSuccess ? pmData2.particleCount10 : DEFAULT_INVALID_PM;
+    data.common.particleCount10 = _averagePMValue(particleCount10, particleCount102);
   }
 
   if (_chargerAvailable) {
@@ -572,7 +523,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
       if (_averageMeasure.common.pm25Sp[ch] == DEFAULT_INVALID_PM) {
         _averageMeasure.common.pm25Sp[ch] = data.common.pm25Sp[ch];
       } else {
-        _averageMeasure.common.pm25Sp[ch] = _averageMeasure.common.pm25Sp[ch] + data.common.pm25Sp[ch];
+        _averageMeasure.common.pm25Sp[ch] =
+            _averageMeasure.common.pm25Sp[ch] + data.common.pm25Sp[ch];
       }
       _pm25SpIterationOkCount[ch] = _pm25SpIterationOkCount[ch] + 1;
     }
@@ -592,7 +544,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
     if (_averageMeasure.common.particleCount005 == DEFAULT_INVALID_PM) {
       _averageMeasure.common.particleCount005 = data.common.particleCount005;
     } else {
-      _averageMeasure.common.particleCount005 = _averageMeasure.common.particleCount005 + data.common.particleCount005;
+      _averageMeasure.common.particleCount005 =
+          _averageMeasure.common.particleCount005 + data.common.particleCount005;
     }
     _pm005CountIterationOkCount = _pm005CountIterationOkCount + 1;
   }
@@ -601,7 +554,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
     if (_averageMeasure.common.particleCount01 == DEFAULT_INVALID_PM) {
       _averageMeasure.common.particleCount01 = data.common.particleCount01;
     } else {
-      _averageMeasure.common.particleCount01 = _averageMeasure.common.particleCount01 + data.common.particleCount01;
+      _averageMeasure.common.particleCount01 =
+          _averageMeasure.common.particleCount01 + data.common.particleCount01;
     }
     _pm01CountIterationOkCount = _pm01CountIterationOkCount + 1;
   }
@@ -610,7 +564,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
     if (_averageMeasure.common.particleCount02 == DEFAULT_INVALID_PM) {
       _averageMeasure.common.particleCount02 = data.common.particleCount02;
     } else {
-      _averageMeasure.common.particleCount02 = _averageMeasure.common.particleCount02 + data.common.particleCount02;
+      _averageMeasure.common.particleCount02 =
+          _averageMeasure.common.particleCount02 + data.common.particleCount02;
     }
     _pm02CountIterationOkCount = _pm02CountIterationOkCount + 1;
   }
@@ -619,7 +574,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
     if (_averageMeasure.common.particleCount50 == DEFAULT_INVALID_PM) {
       _averageMeasure.common.particleCount50 = data.common.particleCount50;
     } else {
-      _averageMeasure.common.particleCount50 = _averageMeasure.common.particleCount50 + data.common.particleCount50;
+      _averageMeasure.common.particleCount50 =
+          _averageMeasure.common.particleCount50 + data.common.particleCount50;
     }
     _pm50CountIterationOkCount = _pm50CountIterationOkCount + 1;
   }
@@ -628,7 +584,8 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
     if (_averageMeasure.common.particleCount10 == DEFAULT_INVALID_PM) {
       _averageMeasure.common.particleCount10 = data.common.particleCount10;
     } else {
-      _averageMeasure.common.particleCount10 = _averageMeasure.common.particleCount10 + data.common.particleCount10;
+      _averageMeasure.common.particleCount10 =
+          _averageMeasure.common.particleCount10 + data.common.particleCount10;
     }
     _pm10CountIterationOkCount = _pm10CountIterationOkCount + 1;
   }
@@ -719,6 +676,115 @@ void Sensor::_applyIteration(MaxSensorPayload &data) {
   }
 }
 
+bool Sensor::_initPMChannel(int ch, AirgradientSerial *serial, PMS *&pms, SPS30 *&sps,
+                            PMSensorType &type) {
+  ESP_LOGI(TAG, "Checking PM sensor %d for PMS5003 at 9600 baud", ch);
+  if (serial->begin(9600)) {
+    pms = new PMS(serial);
+    if (pms->isConnected()) {
+      type = PMSensorType::PMS5003;
+      ESP_LOGI(TAG, "PM sensor %d: PMS5003 detected", ch);
+      return true;
+    }
+
+    delete pms;
+    pms = nullptr;
+  } else {
+    ESP_LOGE(TAG, "PM sensor %d: Failed to open serial at 9600 baud", ch);
+  }
+
+  ESP_LOGW(TAG, "PM sensor %d: PMS5003 not found, trying SPS30 at 115200 baud", ch);
+  sps = new SPS30(serial);
+  if (sps->begin()) {
+    type = PMSensorType::SPS30;
+    ESP_LOGI(TAG, "PM sensor %d: SPS30 detected", ch);
+    return true;
+  }
+
+  ESP_LOGE(TAG, "PM sensor %d: SPS30 not found", ch);
+  delete sps;
+  sps = nullptr;
+  type = PMSensorType::NONE;
+  return false;
+}
+
+bool Sensor::_readPMData(int ch, PMS *pms, SPS30 *sps, PMSensorType type, PMData &data) {
+  data.pm01Ae = DEFAULT_INVALID_PM;
+  data.pm25Ae = DEFAULT_INVALID_PM;
+  data.pm10Ae = DEFAULT_INVALID_PM;
+  data.pm25Sp = DEFAULT_INVALID_PM;
+  data.particleCount003 = DEFAULT_INVALID_PM;
+  data.particleCount005 = DEFAULT_INVALID_PM;
+  data.particleCount01 = DEFAULT_INVALID_PM;
+  data.particleCount02 = DEFAULT_INVALID_PM;
+  data.particleCount50 = DEFAULT_INVALID_PM;
+  data.particleCount10 = DEFAULT_INVALID_PM;
+
+  if (type == PMSensorType::PMS5003 && pms != nullptr) {
+    PMS::Data pmsData;
+    pms->clearBuffer();
+    pms->requestRead();
+    if (!pms->readUntil(pmsData, 1000)) {
+      ESP_LOGE(TAG, "{%d} PMS5003 no data", ch);
+      return false;
+    }
+
+    data.pm01Ae = pmsData.pm_ae_1_0;
+    data.pm25Ae = pmsData.pm_ae_2_5;
+    data.pm10Ae = pmsData.pm_ae_10_0;
+    data.pm25Sp = pmsData.pm_sp_2_5;
+    data.particleCount003 = pmsData.pm_raw_0_3;
+    data.particleCount005 = pmsData.pm_raw_0_5;
+    data.particleCount01 = pmsData.pm_raw_1_0;
+    data.particleCount02 = pmsData.pm_raw_2_5;
+    data.particleCount50 = pmsData.pm_raw_5_0;
+    data.particleCount10 = pmsData.pm_raw_10_0;
+  } else if (type == PMSensorType::SPS30 && sps != nullptr) {
+    SPS30::Data spsData;
+    if (!sps->read(spsData)) {
+      ESP_LOGE(TAG, "{%d} SPS30 no data", ch);
+      return false;
+    }
+
+    data.pm01Ae = spsData.pm_ae_1_0;
+    data.pm25Ae = spsData.pm_ae_2_5;
+    data.pm10Ae = spsData.pm_ae_10_0;
+    data.pm25Sp = data.pm25Ae;
+
+    // Convert SPS30 number concentration from #/cm3 to #/0.1 L.
+    data.particleCount005 = static_cast<int>(spsData.pm_raw_0_5 * 100.0f);
+    data.particleCount01 = static_cast<int>(spsData.pm_raw_1_0 * 100.0f);
+    data.particleCount02 = static_cast<int>(spsData.pm_raw_2_5 * 100.0f);
+    data.particleCount10 = static_cast<int>(spsData.pm_raw_10_0 * 100.0f);
+  } else {
+    ESP_LOGE(TAG, "{%d} Invalid PM sensor state", ch);
+    return false;
+  }
+
+  _printPMData(ch, type, data);
+  return true;
+}
+
+float Sensor::_averagePMValue(float first, float second) {
+  if (IS_PM_VALID(first) && IS_PM_VALID(second)) {
+    return (first + second) / 2.0f;
+  }
+  if (IS_PM_VALID(first)) {
+    return first;
+  }
+  return second;
+}
+
+int Sensor::_averagePMValue(int first, int second) {
+  if (IS_PM_VALID(first) && IS_PM_VALID(second)) {
+    return static_cast<int>((static_cast<int64_t>(first) + second) / 2);
+  }
+  if (IS_PM_VALID(first)) {
+    return first;
+  }
+  return second;
+}
+
 void Sensor::_warmUpSensor() {
   // Self test SGP41
   if (_tvocNoxAvailable) {
@@ -735,12 +801,12 @@ void Sensor::_warmUpSensor() {
   // Warmup PM1 and PM2 while also do SGP conditioning
   // Only if sensor is available
   for (int i = 10; i >= 0; i--) {
-    ESP_LOGI(TAG, "Warming up PMS and/or SGP41 sensors %d", i);
+    ESP_LOGI(TAG, "Warming up PM and/or SGP41 sensors %d", i);
     vTaskDelay(pdMS_TO_TICKS(1000));
-    if (_pms1Available) {
+    if (_pm1Available && _pm1Type == PMSensorType::PMS5003) {
       pms1_->passiveMode();
     }
-    if (_pms2Available) {
+    if (_pm2Available && _pm2Type == PMSensorType::PMS5003) {
       pms2_->passiveMode();
     }
     if (_tvocNoxAvailable) {
@@ -829,24 +895,24 @@ bool Sensor::_applySunlightMeasurementSample() {
   return true;
 }
 
-void Sensor::_printPMData(int ch, PMS::Data &data) {
+void Sensor::_printPMData(int ch, PMSensorType type, const PMData &data) {
+  const char *sensorType = type == PMSensorType::PMS5003 ? "PMS5003" : "SPS30";
+
   // Atmospheric environment
-  ESP_LOGD(TAG, "{%d} PM1.0#AE: %d", ch, data.pm_ae_1_0);
-  ESP_LOGD(TAG, "{%d} PM2.5#AE: %d", ch, data.pm_ae_2_5);
-  ESP_LOGD(TAG, "{%d} PM10.0#AE: %d", ch, data.pm_ae_10_0);
+  ESP_LOGD(TAG, "{%d} %s PM1.0#AE: %.2f", ch, sensorType, data.pm01Ae);
+  ESP_LOGD(TAG, "{%d} %s PM2.5#AE: %.2f", ch, sensorType, data.pm25Ae);
+  ESP_LOGD(TAG, "{%d} %s PM10.0#AE: %.2f", ch, sensorType, data.pm10Ae);
 
   // Standard Particles, CF=1
-  // ESP_LOGD(TAG, "{%d} PM1.0 - SP: %d", ch, data.pm_sp_1_0);
-  ESP_LOGD(TAG, "{%d} PM2.5#SP: %d", ch, data.pm_sp_2_5);
-  // ESP_LOGD(TAG, "{%d} PM10.0 - SP: %d", ch, data.pm_sp_10_0);
+  ESP_LOGD(TAG, "{%d} %s PM2.5#SP: %.2f", ch, sensorType, data.pm25Sp);
 
   // Particle Count
-  ESP_LOGD(TAG, "{%d} PM 0.3 count : %d", ch, data.pm_raw_0_3);
-  ESP_LOGD(TAG, "{%d} PM 0.5 count : %d", ch, data.pm_raw_0_5);
-  ESP_LOGD(TAG, "{%d} PM 1.0 count : %d", ch, data.pm_raw_1_0);
-  ESP_LOGD(TAG, "{%d} PM 2.5 count : %d", ch, data.pm_raw_2_5);
-  ESP_LOGD(TAG, "{%d} PM 5.0 count : %d", ch, data.pm_raw_5_0);
-  ESP_LOGD(TAG, "{%d} PM 10 count : %d", ch, data.pm_raw_10_0);
+  ESP_LOGD(TAG, "{%d} %s PM 0.3 count : %d", ch, sensorType, data.particleCount003);
+  ESP_LOGD(TAG, "{%d} %s PM 0.5 count : %d", ch, sensorType, data.particleCount005);
+  ESP_LOGD(TAG, "{%d} %s PM 1.0 count : %d", ch, sensorType, data.particleCount01);
+  ESP_LOGD(TAG, "{%d} %s PM 2.5 count : %d", ch, sensorType, data.particleCount02);
+  ESP_LOGD(TAG, "{%d} %s PM 5.0 count : %d", ch, sensorType, data.particleCount50);
+  ESP_LOGD(TAG, "{%d} %s PM 10 count : %d", ch, sensorType, data.particleCount10);
 }
 
 void Sensor::_calculateMeasuresAverage() {
@@ -894,19 +960,23 @@ void Sensor::_calculateMeasuresAverage() {
   }
 
   if (_pm01CountIterationOkCount > 0) {
-    _averageMeasure.common.particleCount01 = _averageMeasure.common.particleCount01 / _pm01CountIterationOkCount;
+    _averageMeasure.common.particleCount01 =
+        _averageMeasure.common.particleCount01 / _pm01CountIterationOkCount;
   }
 
   if (_pm02CountIterationOkCount > 0) {
-    _averageMeasure.common.particleCount02 = _averageMeasure.common.particleCount02 / _pm02CountIterationOkCount;
+    _averageMeasure.common.particleCount02 =
+        _averageMeasure.common.particleCount02 / _pm02CountIterationOkCount;
   }
 
   if (_pm50CountIterationOkCount > 0) {
-    _averageMeasure.common.particleCount50 = _averageMeasure.common.particleCount50 / _pm50CountIterationOkCount;
+    _averageMeasure.common.particleCount50 =
+        _averageMeasure.common.particleCount50 / _pm50CountIterationOkCount;
   }
 
   if (_pm10CountIterationOkCount > 0) {
-    _averageMeasure.common.particleCount10 = _averageMeasure.common.particleCount10 / _pm10CountIterationOkCount;
+    _averageMeasure.common.particleCount10 =
+        _averageMeasure.common.particleCount10 / _pm10CountIterationOkCount;
   }
 
   if (_tvocIterationOkCount > 0) {
@@ -926,7 +996,8 @@ void Sensor::_calculateMeasuresAverage() {
   }
 
   if (_o3WEIterationOkCount > 0) {
-    _averageMeasure.extra.o3WorkingElectrode = _averageMeasure.extra.o3WorkingElectrode / _o3WEIterationOkCount;
+    _averageMeasure.extra.o3WorkingElectrode =
+        _averageMeasure.extra.o3WorkingElectrode / _o3WEIterationOkCount;
   }
 
   if (_o3AEIterationOkCount > 0) {

@@ -5,6 +5,7 @@
 - [Led indicator](#led-indicator)
   - [Powered On (1st boot)](#powered-on-1st-boot)
   - [Every wake-up cycle](#every-wake-up-cycle)
+- [Sensor Support](#sensor-support)
 - [System Settings Portal](#system-settings-portal)
 - [Transmission](#transmission)
   - [Fetch Configuration](#1.-fetch-configuration)
@@ -40,6 +41,12 @@
 1. Led indicator is off unless there's error
 2. Slow blink 2x if there's one or more sensor failed to initialize
 3. Slow blink 3x when failed post to server
+
+## Sensor Support
+
+Each PM UART channel independently probes for a PMS5003 at 9600 baud, then falls back to an SPS30 at 115200 baud. This supports PMS5003, SPS30, or a mixed pair without configuration.
+
+For SPS30 data, atmospheric-environment (AE) mass concentrations are also mapped to the standard-particle (SP) fields, and particle counts are multiplied by 100 to convert from #/cm³ to #/0.1 L. SPS30 does not contribute PM0.3 or PM5 particle-count values; those fields remain invalid unless a PMS5003 on the other channel supplies them.
 
 ## System Settings Portal
 
