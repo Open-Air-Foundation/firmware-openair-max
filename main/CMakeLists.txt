@@ -16,6 +16,7 @@ set (
   AirgradientSerial
   Sunlight
   PMS
+  SPS30
   esp_sht4x
   esp_sgp4x
   sensirion_gas_index_algorithm

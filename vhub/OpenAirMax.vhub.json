@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "22ed9e2",
+  "rev": "372502d",
   "product": {
     "slug": "max",
     "name": "Open Air Max",
@@ -529,8 +529,19 @@
         "MAX"
       ],
       "description": "A sensor that fails to initialize or is not connected is excluded from the measurement sequence",
-      "expected_result": "On init failure the matching log prints (e.g. 'Failed open serial for Sunlight', 'Failed init temperature and humidity sensor', 'Failed init TVOC & NOx sensor', 'Failed init charger', 'PMS1 is not connected') and that sensor's values remain at invalid defaults instead of being included in averaging.",
-      "notes": "Each sensor read is guarded by its availability flag; a failed sensor keeps its iteration OK-count at 0 so it is skipped in averaging. Reproduce by disconnecting one sensor."
+      "expected_result": "On init failure the matching log prints (e.g. 'Failed open serial for Sunlight', 'Failed init temperature and humidity sensor', 'Failed init TVOC & NOx sensor', 'Failed init charger', or a PM channel detection failure) and that sensor's values remain at invalid defaults instead of being included in averaging.",
+      "notes": "Each sensor read is guarded by its availability flag; a failed sensor keeps its iteration OK-count at 0 so it is skipped in averaging. Reproduce by disconnecting one sensor, including either supported PM sensor type."
+    },
+    {
+      "id": "sensor.init.pm-uart-auto-detection",
+      "category": "Sensors",
+      "sub_category": "Initialization",
+      "applies_to": [
+        "MAX"
+      ],
+      "description": "Each PM UART channel detects PMS5003 first and falls back to SPS30",
+      "expected_result": "On each channel, a PMS5003 is detected at 9600 baud and contributes valid PM measurements without fallback. After replacing it with an SPS30 and rebooting, the PMS5003 probe fails, the channel is retried at 115200 baud, the SPS30 is detected, and valid SPS30 PM measurements appear. SPS30 PM2.5 AE and SP are equal, its debug counts equal 100 times a reference reading in #/cm³, and its PM0.3 and PM5 debug values are invalid.",
+      "notes": "Detection runs independently per channel and always probes PMS5003 before SPS30. A mixed PMS5003/SPS30 pair must keep both channels active; if neither sensor is found on a channel, that channel remains unavailable while the other can still measure. Use a separate SPS30 reader as the raw #/cm³ reference. In a mixed pair, the shared PM5 value comes only from PMS5003 because SPS30 does not contribute that bin."
     },
     {
       "id": "sensor.init.o3no2-model-gating",
@@ -562,8 +573,8 @@
         "MAX"
       ],
       "description": "PM and SGP sensors run a warm-up sequence before measurements",
-      "expected_result": "Before the measurement loop serial logs a countdown 'Warming up PMS and/or SGP41 sensors 10' down to '...0' (about 11s).",
-      "notes": "The countdown log runs every init. PMS passive-mode calls and SGP41 conditioning only run for sensors marked available; SGP41 also runs a self-test first."
+      "expected_result": "Before the measurement loop serial logs the PM sensor and SGP41 warm-up countdown from 10 down to 0 (about 11s).",
+      "notes": "The countdown runs every init. PM sensor-specific setup and SGP41 conditioning only run for sensors marked available; SGP41 also runs a self-test first."
     },
     {
       "id": "sensor.measure.iterations-20",
@@ -595,8 +606,8 @@
         "MAX"
       ],
       "description": "Two PM sensors are averaged, with single-sensor fallback",
-      "expected_result": "When both PMS read successfully, PM1.0/PM10 and shared particle counts except PM0.3 are averaged across the two; PM2.5 and PM0.3 particle count are kept per channel. If only one PMS reads, its values are used; if a PMS fails it logs '{1} PMS no data' or '{2} PMS no data'.",
-      "notes": "Reproduce single-sensor mode by disconnecting one PMS."
+      "expected_result": "When both PM sensors read successfully, PM1.0/PM10 and valid shared particle-count bins are averaged across the two; PM2.5 and PM0.3 particle count are kept per channel. If only one PM sensor supplies a value, that sensor's value is used; a read failure identifies the affected channel in the serial log.",
+      "notes": "Reproduce single-sensor mode by disconnecting one PM sensor. PMS5003 and SPS30 may be used in either channel; SPS30 PM0.3 and PM5 particle-count bins are invalid and are not included in averaging."
     },
     {
       "id": "sensor.measure.average-logged",
@@ -1017,7 +1028,7 @@
       ],
       "description": "PM2.5 reading tracks a reference instrument",
       "expected_result": "Averaged PM values (serial 'PM2.5#AE{1}/{2}' and dashboard pm25) track a co-located reference PM instrument within the agreed tolerance.",
-      "notes": "Requires: reference PM instrument and a controlled aerosol source; optional, skippable. Two PMS channels are averaged - both should read consistently."
+      "notes": "Requires: reference PM instrument and a controlled aerosol source; optional, skippable. Two PM channels are averaged - both should read consistently."
     },
     {
       "id": "lab.temp-humidity-accuracy",

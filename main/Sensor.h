@@ -12,6 +12,7 @@
 #include "AirgradientUART.h"
 #include "BQ25672.h"
 #include "PMS.h"
+#include "SPS30.h"
 #include "Sunlight.h"
 #include "airgradientClient.h"
 #include "sht4x.h"
@@ -27,7 +28,7 @@ struct MaxSensorPayload {
 class Sensor {
 public:
   Sensor(i2c_master_bus_handle_t busHandle);
-  ~Sensor(){}
+  ~Sensor() {}
   bool init(Configuration::Model model, int co2ABCDays);
   bool startMeasures(int iterations, int intervalMs);
   void printMeasures();
@@ -36,6 +37,21 @@ public:
   float batteryVoltage();
 
 private:
+  enum class PMSensorType { NONE, PMS5003, SPS30 };
+
+  struct PMData {
+    float pm01Ae;
+    float pm25Ae;
+    float pm10Ae;
+    float pm25Sp;
+    int particleCount003;
+    int particleCount005;
+    int particleCount01;
+    int particleCount02;
+    int particleCount50;
+    int particleCount10;
+  };
+
   const char *const TAG = "Sensor";
 
   void _measure(int iteration, MaxSensorPayload &data);
@@ -43,7 +59,12 @@ private:
   void _calculateMeasuresAverage();
   void _warmUpSensor();
   bool _applySunlightMeasurementSample();
-  void _printPMData(int ch, PMS::Data &data);
+  bool _initPMChannel(int ch, AirgradientSerial *serial, PMS *&pms, SPS30 *&sps,
+                      PMSensorType &type);
+  bool _readPMData(int ch, PMS *pms, SPS30 *sps, PMSensorType type, PMData &data);
+  void _printPMData(int ch, PMSensorType type, const PMData &data);
+  static float _averagePMValue(float first, float second);
+  static int _averagePMValue(int first, int second);
 
   int _rco2IterationOkCount = 0;
   int _atmpIterationOkCount = 0;
@@ -75,13 +96,17 @@ private:
   Sunlight *co2_ = nullptr;
   bool _co2ReadTriggered = false;
 
-  bool _pms1Available = true;
+  bool _pm1Available = true;
   AirgradientSerial *agsPM1_ = nullptr;
   PMS *pms1_ = nullptr;
+  SPS30 *sps1_ = nullptr;
+  PMSensorType _pm1Type = PMSensorType::NONE;
 
-  bool _pms2Available = true;
+  bool _pm2Available = true;
   AirgradientSerial *agsPM2_ = nullptr;
   PMS *pms2_ = nullptr;
+  SPS30 *sps2_ = nullptr;
+  PMSensorType _pm2Type = PMSensorType::NONE;
 
   bool _chargerAvailable = true;
   BQ25672 *charger_ = nullptr;
