@@ -20,18 +20,20 @@
 #include <algorithm>
 #include <string>
 
+#define MILLIS() ((uint32_t)(esp_timer_get_time() / 1000))
+
 WiFiManager::WiFiManager()
     : _state(WM_STATE_INIT),
       _connectTimeout(WM_DEFAULT_CONNECT_TIMEOUT * 1000000ULL), // Convert to microseconds
-      _configPortalTimeout(WM_DEFAULT_PORTAL_TIMEOUT * 1000000ULL), _configPortalBlocking(true),
+      _configPortalTimeout(WM_DEFAULT_PORTAL_TIMEOUT * 1000UL), _configPortalBlocking(true),
       _breakAfterConfig(false), _apStaticIPSet(false), _staStaticIPSet(false),
       _minimumQuality(WM_MIN_QUALITY), _removeDuplicateAPs(CONFIG_WM_REMOVE_DUP_APS),
       _scanDispPerc(false), _lastScanTime(0), _scanInProgress(false), _captivePortalEnable(true),
       _captivePortalClientCheck(true), _webPortalClientCheck(true), _apNetif(nullptr),
       _staNetif(nullptr), _httpServer(nullptr), _wifiEventHandler(nullptr),
       _ipEventHandler(nullptr), _lastConxResult(WL_IDLE_STATUS), _portalAbortResult(false),
-      _configPortalStart(0), _connectStart(0), _dnsTaskHandle(nullptr), _dnsSocket(-1),
-      _dnsRunning(false), _initialized(false), _cleanupInProgress(false) {
+      _configPortalStartMs(0), _connectStart(0), _apClientCount(0), _dnsTaskHandle(nullptr),
+      _dnsSocket(-1), _dnsRunning(false), _initialized(false), _cleanupInProgress(false) {
   // Set wifi driver log level to only warning, to reduce unnecessary information
   esp_log_level_set("wifi", ESP_LOG_NONE);
 }
@@ -349,7 +351,8 @@ bool WiFiManager::startConfigPortalInternal(const char *apName, const char *apPa
 
   _state = WM_STATE_START_PORTAL;
   _portalAbortResult = false;
-  _configPortalStart = esp_timer_get_time();
+  _configPortalStartMs.store(MILLIS());
+  _apClientCount.store(0);
 
   WM_LOGI("Setting up WiFi subsystem...");
   // Setup WiFi if not already done
@@ -397,14 +400,6 @@ bool WiFiManager::startConfigPortalInternal(const char *apName, const char *apPa
     while (_state == WM_STATE_RUN_PORTAL || _state == WM_STATE_TRY_STA) {
       updateState();
       vTaskDelay(pdMS_TO_TICKS(100));
-
-      // Check for timeout
-      if (_configPortalTimeout > 0 &&
-          esp_timer_get_time() - _configPortalStart > _configPortalTimeout) {
-        WM_LOGW("Config portal timeout");
-        _state = WM_STATE_PORTAL_TIMEOUT;
-        break;
-      }
     }
 
     // Check final state but don't cleanup servers yet
@@ -461,7 +456,7 @@ bool WiFiManager::process() {
 
 // Configuration methods
 void WiFiManager::setConfigPortalTimeout(uint32_t seconds) {
-  _configPortalTimeout = seconds * 1000000ULL; // Convert to microseconds
+  _configPortalTimeout = seconds * 1000UL; // Convert to milliseconds
   WM_LOGD("Config portal timeout set to %u seconds", seconds);
 }
 
@@ -794,14 +789,15 @@ void WiFiManager::updateState() {
     }
     break;
 
-  case WM_STATE_RUN_PORTAL:
+  case WM_STATE_RUN_PORTAL: {
     // Check portal timeout
-    if (_configPortalTimeout > 0 &&
-        esp_timer_get_time() - _configPortalStart > _configPortalTimeout) {
+    if (_configPortalTimeout > 0 && _apClientCount.load() == 0 &&
+        MILLIS() - _configPortalStartMs.load() > _configPortalTimeout) {
       WM_LOGW("Config portal timeout");
       _state = WM_STATE_PORTAL_TIMEOUT;
     }
     break;
+  }
 
   default:
     break;
@@ -931,11 +927,13 @@ void WiFiManager::wifiEventHandler(void *arg, esp_event_base_t event_base, int32
     break;
 
   case WIFI_EVENT_AP_STOP:
+    manager->_apClientCount.store(0);
     WM_LOGI("AP stopped");
     break;
 
   case WIFI_EVENT_AP_STACONNECTED: {
     wifi_event_ap_staconnected_t *event = static_cast<wifi_event_ap_staconnected_t *>(event_data);
+    manager->_apClientCount.fetch_add(1);
     WM_LOGI("Station connected to AP, MAC: " MACSTR, MAC2STR(event->mac));
     break;
   }
@@ -943,6 +941,10 @@ void WiFiManager::wifiEventHandler(void *arg, esp_event_base_t event_base, int32
   case WIFI_EVENT_AP_STADISCONNECTED: {
     wifi_event_ap_stadisconnected_t *event =
         static_cast<wifi_event_ap_stadisconnected_t *>(event_data);
+    uint32_t clientCount = manager->_apClientCount.load();
+    if (clientCount > 0 && manager->_apClientCount.fetch_sub(1) == 1) {
+      manager->_configPortalStartMs.store(MILLIS());
+    }
     WM_LOGI("Station disconnected from AP, MAC: " MACSTR, MAC2STR(event->mac));
     break;
   }

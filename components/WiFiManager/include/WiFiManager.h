@@ -12,6 +12,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <functional>
 
 #define NETWORK_MODE_CELLULAR_STR "cellular"
@@ -205,8 +206,9 @@ private:
   // Internal state
   wl_status_t _lastConxResult;
   bool _portalAbortResult;
-  int64_t _configPortalStart;
+  std::atomic<uint32_t> _configPortalStartMs;
   int64_t _connectStart;
+  std::atomic<uint32_t> _apClientCount;
 
   // Private methods
   void init();
