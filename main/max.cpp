@@ -33,6 +33,7 @@
 #include "driver/i2c_master.h"
 
 #include "MaxConfig.h"
+#include "CellularOperatorScanner.h"
 #include "Configuration.h"
 #include "PayloadCache.h"
 #include "GasIndex.h"
@@ -89,6 +90,7 @@ static AirgradientSerial *g_ceAgSerial = nullptr;
 static CellularModule *g_cellularCard = nullptr;
 static AirgradientClient *g_agClient = nullptr;
 static WiFiManager g_wifiManager;
+static CellularOperatorScanner g_cellularOperatorScanner;
 
 static QueueHandle_t bootButtonQueue = NULL;
 static void IRAM_ATTR bootButtonISRHandler(void *arg) {
@@ -266,6 +268,11 @@ extern "C" void app_main(void) {
     settings.httpDomain = g_configuration.getHttpDomain();
     settings.coapDomain = g_configuration.getCoapDomain();
     g_wifiManager.setSettings(settings);
+    g_wifiManager.setStartCellularOperatorScanCallback(
+        []() { return g_cellularOperatorScanner.requestScan(); });
+    g_wifiManager.setGetCellularOperatorScanStatusCallback(
+        []() { return g_cellularOperatorScanner.getStatus(); });
+    g_cellularOperatorScanner.start();
 
     // Run portal
     std::string ssid = std::string("airgradient-") + g_serialNumber;
@@ -280,6 +287,7 @@ extern "C" void app_main(void) {
       }
       esp_restart();
     }
+    g_cellularOperatorScanner.stop();
 
     // Notify that it success and restart
     g_statusLed.on();

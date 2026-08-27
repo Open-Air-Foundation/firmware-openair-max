@@ -27,6 +27,24 @@ typedef std::function<void()> SaveConfigCallback;
 typedef std::function<void()> ConfigModeCallback;
 typedef std::function<void()> WebServerModeCallback;
 
+enum class CellularOperatorScanState { Idle, Scanning, Succeeded, Failed };
+
+struct CellularOperatorRecord {
+  uint32_t operatorId;
+  int accessTech;
+  std::string operatorName;
+};
+
+struct CellularOperatorScanStatus {
+  CellularOperatorScanState state = CellularOperatorScanState::Idle;
+  uint32_t generation = 0;
+  std::string error;
+  std::vector<CellularOperatorRecord> operators;
+};
+
+typedef std::function<bool()> StartCellularOperatorScanCallback;
+typedef std::function<CellularOperatorScanStatus()> GetCellularOperatorScanStatusCallback;
+
 /**
  * WiFi network information structure
  */
@@ -97,6 +115,8 @@ public:
   void setSaveConfigCallback(SaveConfigCallback callback);
   void setConfigModeCallback(ConfigModeCallback callback);
   void setWebServerModeCallback(WebServerModeCallback callback);
+  void setStartCellularOperatorScanCallback(StartCellularOperatorScanCallback callback);
+  void setGetCellularOperatorScanStatusCallback(GetCellularOperatorScanStatusCallback callback);
 
   // Scanning and filtering
   void setMinimumSignalQuality(int percent = 8);
@@ -195,6 +215,8 @@ private:
   SaveConfigCallback _saveConfigCallback;
   ConfigModeCallback _configModeCallback;
   WebServerModeCallback _webServerModeCallback;
+  StartCellularOperatorScanCallback _startCellularOperatorScanCallback;
+  GetCellularOperatorScanStatusCallback _getCellularOperatorScanStatusCallback;
 
   // ESP-IDF handles
   esp_netif_t *_apNetif;
@@ -237,6 +259,8 @@ private:
   static esp_err_t handleFetchSettings(httpd_req_t *req);
   static esp_err_t handleStatus(httpd_req_t *req);
   static esp_err_t handleScan(httpd_req_t *req);
+  static esp_err_t handleStartCellularOperatorScan(httpd_req_t *req);
+  static esp_err_t handleGetCellularOperatorScanStatus(httpd_req_t *req);
   static esp_err_t handleSettingsSave(httpd_req_t *req);
   static esp_err_t handleInfo(httpd_req_t *req);
   static esp_err_t handleReset(httpd_req_t *req);
