@@ -70,6 +70,7 @@ RTC_DATA_ATTR int xMeasureInterval = 180;
 #define BIT_SENSOR_MEASURES_FINISH (1 << 0)
 #define BIT_TRANSMISSION_FINISH (1 << 1)
 static TaskHandle_t g_handleNetworkTask = NULL;
+static TaskHandle_t g_handleExtWatchdogTask = NULL;
 static EventGroupHandle_t g_syncGroup;
 static bool g_isSendMeasuresCycle = false;
 static bool g_isFullTransmissionCycle = false;
@@ -102,6 +103,10 @@ static void IRAM_ATTR bootButtonISRHandler(void *arg) {
 static void initConsole();
 
 static void initGPIO();
+
+static void extWatchdogTask(void *arg);
+
+static bool startExtWatchdogTask();
 
 static void bootButtonTask(void *arg);
 
@@ -186,6 +191,7 @@ extern "C" void app_main(void) {
       // Reset external watchdog timer before sleep to make sure its not trigger while in sleep
       //   before system wakeup
       initGPIO();
+      startExtWatchdogTask();
       resetExtWatchdog();
 
       vTaskDelay(pdMS_TO_TICKS(1000));
@@ -208,8 +214,7 @@ extern "C" void app_main(void) {
   // Initialize every peripheral GPIOs to OFF state
   initGPIO();
 
-  // Reset external WDT
-  resetExtWatchdog();
+  startExtWatchdogTask();
 
   if (xWakeUpCounter == 0) {
     // Initialize boot button event handler only on the first boot
@@ -414,9 +419,6 @@ extern "C" void app_main(void) {
 
   // Only set or wait flags when networking task is running
   if (g_handleNetworkTask != nullptr) {
-    // Ensure watchdog not triggered while wait for transmission to finish
-    resetExtWatchdog();
-
     // Notify networking task that sensor measures finish
     xEventGroupSetBits(g_syncGroup, BIT_SENSOR_MEASURES_FINISH);
     ESP_LOGI(TAG, "BIT_SENSOR_MEASURES_FINISH is set, wait until BIT_TRANSMISSION_FINISH set");
@@ -507,6 +509,32 @@ void resetExtWatchdog() {
   gpio_set_level(IO_WDT, 1);
   vTaskDelay(pdMS_TO_TICKS(20));
   gpio_set_level(IO_WDT, 0);
+}
+
+void extWatchdogTask(void *arg) {
+  (void)arg;
+  constexpr uint32_t FEED_INTERVAL_MS = 60000;
+
+  while (1) {
+    resetExtWatchdog();
+    vTaskDelay(pdMS_TO_TICKS(FEED_INTERVAL_MS));
+  }
+}
+
+bool startExtWatchdogTask() {
+  if (g_handleExtWatchdogTask != NULL) {
+    return true;
+  }
+
+  BaseType_t result =
+      xTaskCreate(extWatchdogTask, "ExtWatchdogTask", 2048, NULL, 1, &g_handleExtWatchdogTask);
+  if (result != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create external watchdog task");
+    g_handleExtWatchdogTask = NULL;
+    return false;
+  }
+
+  return true;
 }
 
 void initGPIO() {
@@ -732,8 +760,6 @@ void ensureConnectionReady() {
 
   while (g_agClient->isClientReady() == false &&
          MILLIS() < TIMEOUT_ENSURING_CONNECTION_ON_BOOT_MS) {
-    // Make sure watchdog not reset
-    resetExtWatchdog();
     ESP_LOGI(TAG, "Ensuring client connection...");
     if (g_agClient->ensureClientConnection(reset)) {
       // Now its connected, set led notification and stop reconnection
@@ -790,9 +816,6 @@ bool initializeNetwork(unsigned long wakeUpCounter) {
     g_networkReady = initializeWiFiNetwork(wakeUpCounter);
   }
 
-  // Make sure watchdog not triggered for the rest of the code before sleep
-  resetExtWatchdog();
-
   return g_networkReady;
 }
 
@@ -830,8 +853,6 @@ bool initializeCellularNetwork(unsigned long wakeUpCounter) {
   uint32_t warmUpCE = g_configuration.getCellularWarmUpMs();
   g_cellularCard = new CellularModuleA7672XX(g_ceAgSerial, IO_CE_POWER, warmUpCE);
   g_agClient = new AirgradientCellularClient(g_cellularCard);
-
-  resetExtWatchdog();
 
   // Load and set CE module operators (including persisted fail counter)
   g_cellularCard->setOperators(g_configuration.getCellularOperators(),
