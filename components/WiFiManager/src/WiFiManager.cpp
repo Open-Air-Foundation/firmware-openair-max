@@ -1427,6 +1427,7 @@ esp_err_t WiFiManager::handleFetchSettings(httpd_req_t *req) {
   cJSON_AddStringToObject(root, "ssid", manager->_settings.ssid.c_str());
   cJSON_AddStringToObject(root, "http_dom", manager->_settings.httpDomain.c_str());
   cJSON_AddStringToObject(root, "coap_dom", manager->_settings.coapDomain.c_str());
+  cJSON_AddStringToObject(root, "cell_ops", manager->_settings.cellularOperators.c_str());
 
   char *json_string = cJSON_Print(root);
   if (json_string) {
@@ -1707,6 +1708,8 @@ SettingsForm WiFiManager::parseFormParams(char *buf) {
         form.httpDomain = value;
       } else if (key == "coap_dom") {
         form.coapDomain = value;
+      } else if (key == "cell_ops") {
+        form.cellularOperators = value;
       }
     }
 

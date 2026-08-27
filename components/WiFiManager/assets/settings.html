@@ -120,6 +120,20 @@
             visibility: visible;
             opacity: 1;
         }
+        .operator-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .operator-toolbar button { padding: 9px 12px; border: none; border-radius: 3px; background: #1fa3ec; color: #fff; cursor: pointer; font-weight: bold; }
+        .operator-toolbar button:disabled { background: #555; cursor: default; }
+        .operator-status { color: #aaa; font-size: 0.85em; line-height: 1.4; margin-bottom: 10px; }
+        .operator-list { max-height: 240px; overflow-y: auto; border: 1px solid #444; border-radius: 3px; padding: 5px; background: #2c2c2c; }
+        .operator-row { display: flex; align-items: center; gap: 8px; padding: 10px 8px; margin: 5px 0; background: #444; border: 1px solid #555; border-radius: 3px; }
+        .operator-row.selected { border-color: #1fa3ec; }
+        .operator-row input { flex: 0 0 auto; }
+        .operator-details { flex: 1; min-width: 0; }
+        .operator-name { font-weight: bold; overflow-wrap: anywhere; }
+        .operator-id { color: #bbb; font-size: 0.8em; }
+        .operator-actions { display: flex; gap: 4px; }
+        .operator-actions button { width: 30px; height: 30px; padding: 0; border: 1px solid #666; border-radius: 3px; background: #555; color: #fff; cursor: pointer; }
+        .operator-actions button:disabled { opacity: 0.35; cursor: default; }
     </style>
 </head>
 <body>
@@ -199,11 +213,27 @@
                 </label>
                 <input id="coap_dom" name="coap_dom" type="text" placeholder="128.140.49.53">
             </div>
+            <div class="form-group">
+                <label>Preferred Mobile Networks
+                    <span class="tooltip-container">
+                        <span class="tooltip-icon">?</span>
+                        <span class="tooltip-text">Select mobile networks and arrange them in connection priority order.</span>
+                    </span>
+                </label>
+                <div class="operator-toolbar">
+                    <button id="operator_scan_button" type="button" onclick="startOperatorScan()" disabled>Scan Networks</button>
+                </div>
+                <div id="operator_status" class="operator-status">Scan to find available mobile networks.</div>
+                <div id="operator_list" class="operator-list">
+                    <div class="loading">Loading saved networks...</div>
+                </div>
+                <input id="cell_ops" name="cell_ops" type="hidden" value="">
+            </div>
         </div>
         
         <!-- SAVE BUTTON -->
         <div class="button-group">
-            <button type="submit">Save Settings</button>
+            <button id="save_button" type="submit" disabled>Save Settings</button>
         </div>
     </form>
 </div>
@@ -224,6 +254,223 @@
     
     // --- Functions reused from your original wifi.html ---
     let selectedNetworkEl = null;
+    let scannedOperatorGroups = [];
+    let savedOperatorGroups = [];
+    let selectedOperatorIds = [];
+    let operatorScanActive = false;
+    let settingsLoaded = false;
+
+    function parseSerializedOperators(serialized) {
+        const groups = [];
+        const groupsById = {};
+        if (!serialized) return groups;
+
+        serialized.split(',').forEach(entry => {
+            const separator = entry.indexOf(':');
+            if (separator <= 0) return;
+
+            const id = entry.substring(0, separator);
+            if (!groupsById[id]) {
+                groupsById[id] = { id: id, name: '', entries: [] };
+                groups.push(groupsById[id]);
+            }
+            groupsById[id].entries.push(entry);
+        });
+        return groups;
+    }
+
+    function groupScannedOperators(records) {
+        const groups = [];
+        const groupsById = {};
+        (records || []).forEach(record => {
+            const id = String(record.id);
+            if (!groupsById[id]) {
+                groupsById[id] = { id: id, name: record.name || '', entries: [] };
+                groups.push(groupsById[id]);
+            } else if (!groupsById[id].name && record.name) {
+                groupsById[id].name = record.name;
+            }
+
+            const entry = `${id}:${record.access_technology}`;
+            if (!groupsById[id].entries.includes(entry)) {
+                groupsById[id].entries.push(entry);
+            }
+        });
+        return groups;
+    }
+
+    function findOperatorGroup(id) {
+        return scannedOperatorGroups.find(group => group.id === id) ||
+            savedOperatorGroups.find(group => group.id === id);
+    }
+
+    function updateSerializedOperators() {
+        const entries = [];
+        selectedOperatorIds.forEach(id => {
+            const group = findOperatorGroup(id);
+            if (group) entries.push(...group.entries);
+        });
+        document.getElementById('cell_ops').value = entries.join(',');
+    }
+
+    function toggleOperator(id, selected) {
+        if (selected) {
+            if (!selectedOperatorIds.includes(id)) selectedOperatorIds.push(id);
+        } else {
+            selectedOperatorIds = selectedOperatorIds.filter(operatorId => operatorId !== id);
+        }
+        updateSerializedOperators();
+        renderOperators();
+    }
+
+    function moveOperator(id, offset) {
+        const index = selectedOperatorIds.indexOf(id);
+        const target = index + offset;
+        if (index < 0 || target < 0 || target >= selectedOperatorIds.length) return;
+
+        selectedOperatorIds.splice(index, 1);
+        selectedOperatorIds.splice(target, 0, id);
+        updateSerializedOperators();
+        renderOperators();
+    }
+
+    function renderOperators() {
+        const container = document.getElementById('operator_list');
+        const orderedGroups = [];
+
+        selectedOperatorIds.forEach(id => {
+            const group = findOperatorGroup(id);
+            if (group) orderedGroups.push(group);
+        });
+        scannedOperatorGroups.forEach(group => {
+            if (!selectedOperatorIds.includes(group.id)) orderedGroups.push(group);
+        });
+
+        container.innerHTML = '';
+        if (orderedGroups.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'loading';
+            empty.textContent = 'No preferred networks selected.';
+            container.appendChild(empty);
+            return;
+        }
+
+        orderedGroups.forEach(group => {
+            const selectedIndex = selectedOperatorIds.indexOf(group.id);
+            const selected = selectedIndex >= 0;
+            const row = document.createElement('div');
+            row.className = `operator-row${selected ? ' selected' : ''}`;
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = selected;
+            checkbox.onchange = () => toggleOperator(group.id, checkbox.checked);
+            row.appendChild(checkbox);
+
+            const details = document.createElement('div');
+            details.className = 'operator-details';
+            const name = document.createElement('div');
+            name.className = 'operator-name';
+            name.textContent = group.name || 'Configured mobile network';
+            const id = document.createElement('div');
+            id.className = 'operator-id';
+            id.textContent = selected ? `Priority ${selectedIndex + 1} · MCC/MNC ${group.id}` :
+                `MCC/MNC ${group.id}`;
+            details.appendChild(name);
+            details.appendChild(id);
+            row.appendChild(details);
+
+            if (selected) {
+                const actions = document.createElement('div');
+                actions.className = 'operator-actions';
+
+                const up = document.createElement('button');
+                up.type = 'button';
+                up.textContent = '↑';
+                up.title = 'Move up';
+                up.disabled = selectedIndex === 0;
+                up.onclick = () => moveOperator(group.id, -1);
+
+                const down = document.createElement('button');
+                down.type = 'button';
+                down.textContent = '↓';
+                down.title = 'Move down';
+                down.disabled = selectedIndex === selectedOperatorIds.length - 1;
+                down.onclick = () => moveOperator(group.id, 1);
+
+                actions.appendChild(up);
+                actions.appendChild(down);
+                row.appendChild(actions);
+            }
+            container.appendChild(row);
+        });
+    }
+
+    function setOperatorScanActive(active) {
+        operatorScanActive = active;
+        updateFormControls();
+    }
+
+    function updateFormControls() {
+        document.getElementById('operator_scan_button').disabled =
+            operatorScanActive || !settingsLoaded;
+        document.getElementById('save_button').disabled = operatorScanActive || !settingsLoaded;
+    }
+
+    function pollOperatorScan() {
+        fetch('/cellular-operators/scan')
+            .then(response => response.json())
+            .then(status => {
+                if (status.state === 'scanning') {
+                    setOperatorScanActive(true);
+                    document.getElementById('operator_status').textContent =
+                        'Scanning mobile networks. This can take several minutes...';
+                    setTimeout(pollOperatorScan, 2000);
+                    return;
+                }
+
+                setOperatorScanActive(false);
+                if (status.state === 'succeeded') {
+                    scannedOperatorGroups = groupScannedOperators(status.operators);
+                    renderOperators();
+                    document.getElementById('operator_status').textContent =
+                        `Found ${scannedOperatorGroups.length} mobile network(s).`;
+                } else if (status.state === 'failed') {
+                    document.getElementById('operator_status').textContent =
+                        `Mobile network scan failed${status.error ? `: ${status.error}` : '.'}`;
+                }
+            })
+            .catch(error => {
+                console.error('Mobile network scan status failed:', error);
+                if (operatorScanActive) {
+                    document.getElementById('operator_status').textContent =
+                        'Connection interrupted. Checking scan status...';
+                    setTimeout(pollOperatorScan, 2000);
+                }
+            });
+    }
+
+    function startOperatorScan() {
+        if (operatorScanActive) return;
+
+        setOperatorScanActive(true);
+        document.getElementById('operator_status').textContent = 'Starting mobile network scan...';
+        fetch('/cellular-operators/scan', { method: 'POST' })
+            .then(response => {
+                if (response.status === 409) {
+                    pollOperatorScan();
+                    return;
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                pollOperatorScan();
+            })
+            .catch(error => {
+                console.error('Mobile network scan failed:', error);
+                setOperatorScanActive(false);
+                document.getElementById('operator_status').textContent =
+                    'Unable to start mobile network scan.';
+            });
+    }
 
     function loadNetworks() {
         const container = document.getElementById('networks');
@@ -256,7 +503,7 @@
     }
 
     function loadSettings() {
-        fetch('/fetch-settings')
+        return fetch('/fetch-settings')
             .then(response => response.json())
             .then(settings => {
                 // Populate Network Mode
@@ -281,13 +528,25 @@
                 if (settings.apn) {
                     document.getElementById('apn').value = settings.apn;
                 }
+                const serializedOperators = settings.cell_ops || '';
+                document.getElementById('cell_ops').value = serializedOperators;
+                savedOperatorGroups = parseSerializedOperators(serializedOperators);
+                selectedOperatorIds = savedOperatorGroups.map(group => group.id);
+                renderOperators();
+                document.getElementById('operator_status').textContent =
+                    selectedOperatorIds.length > 0 ?
+                        'Saved mobile networks shown below. Scan to update the list.' :
+                        'Scan to find available mobile networks.';
+                settingsLoaded = true;
+                updateFormControls();
 
                 // Update UI visibility based on loaded settings
                 toggleNetworkSettings();
             })
             .catch(error => {
                 console.error('Failed to fetch settings:', error);
-                // Handle error, e.g., show a message to the user
+                document.getElementById('operator_status').textContent =
+                    'Unable to load saved settings. Reload this page to try again.';
             });
     }
 
@@ -319,7 +578,14 @@
     document.addEventListener('DOMContentLoaded', function() {
         // Load saved settings concurrently, as soon as the page's DOM is ready. 
         // This makes the UI populate with saved data much faster.
-        loadSettings();
+        loadSettings().then(pollOperatorScan);
+        document.querySelector('form').addEventListener('submit', function(event) {
+            if (operatorScanActive) {
+                event.preventDefault();
+                document.getElementById('operator_status').textContent =
+                    'Wait for the mobile network scan to finish before saving.';
+            }
+        });
     });
 
     // --- Initialize page state on load ---

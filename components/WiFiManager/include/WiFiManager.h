@@ -63,6 +63,7 @@ struct SettingsForm {
   std::string apn;
   std::string httpDomain;
   std::string coapDomain;
+  std::string cellularOperators;
   // Add more here
 };
 

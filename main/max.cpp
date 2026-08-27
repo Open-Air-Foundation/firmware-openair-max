@@ -267,6 +267,7 @@ extern "C" void app_main(void) {
     settings.apn = g_configuration.getAPN();
     settings.httpDomain = g_configuration.getHttpDomain();
     settings.coapDomain = g_configuration.getCoapDomain();
+    settings.cellularOperators = g_configuration.getCellularOperators();
     g_wifiManager.setSettings(settings);
     g_wifiManager.setStartCellularOperatorScanCallback(
         []() { return g_cellularOperatorScanner.requestScan(); });
@@ -298,6 +299,11 @@ extern "C" void app_main(void) {
     settings = g_wifiManager.getSettings();
     config.httpDomain = settings.httpDomain;
     config.coapDomain = settings.coapDomain;
+    if (settings.cellularOperators != config.cellularOperators) {
+      config.cellularOperators = settings.cellularOperators;
+      config.currentOperatorId = 0;
+      config.cellularRegFailCount = 0;
+    }
     if (settings.networkMode == NETWORK_MODE_CELLULAR_STR) {
       config.networkOption = NetworkOption::Cellular;
       config.apn = settings.apn;
