@@ -120,8 +120,16 @@
             visibility: visible;
             opacity: 1;
         }
+        .operator-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; font-weight: bold; }
+        .operator-label .tooltip-container { flex: 0 0 auto; margin-left: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+        .operator-label .tooltip-text { left: auto; right: -2px; margin-left: 0; }
+        .operator-label .tooltip-text::after { left: auto; right: 5px; margin-left: 0; }
+        .operator-label .tooltip-container:focus { outline: none; }
+        .operator-label .tooltip-container:focus .tooltip-text { visibility: visible; opacity: 1; }
+        .operator-label .tooltip-container:focus-visible .tooltip-icon { outline: 2px solid #1fa3ec; outline-offset: 2px; }
         .operator-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-        .operator-toolbar button { padding: 9px 12px; border: none; border-radius: 3px; background: #1fa3ec; color: #fff; cursor: pointer; font-weight: bold; }
+        .operator-toolbar button { flex: 1; padding: 12px; font-size: 1em; border: none; border-radius: 5px; background: #1fa3ec; color: #fff; cursor: pointer; font-weight: bold; transition: background-color 0.2s; }
+        .operator-toolbar button:hover:not(:disabled) { background: #1890d0; }
         .operator-toolbar button:disabled { background: #555; cursor: default; }
         .operator-status { color: #aaa; font-size: 0.85em; line-height: 1.4; margin-bottom: 10px; }
         .operator-list { max-height: 240px; overflow-y: auto; border: 1px solid #444; border-radius: 3px; padding: 5px; background: #2c2c2c; }
@@ -130,7 +138,9 @@
         .operator-row input { flex: 0 0 auto; }
         .operator-details { flex: 1; min-width: 0; }
         .operator-name { font-weight: bold; overflow-wrap: anywhere; }
+        .operator-saved-name { color: #bbb; overflow-wrap: anywhere; }
         .operator-id { color: #bbb; font-size: 0.8em; }
+        .operator-id-value { color: #eee; font-weight: bold; }
         .operator-actions { display: flex; gap: 4px; }
         .operator-actions button { width: 30px; height: 30px; padding: 0; border: 1px solid #666; border-radius: 3px; background: #555; color: #fff; cursor: pointer; }
         .operator-actions button:disabled { opacity: 0.35; cursor: default; }
@@ -214,18 +224,18 @@
                 <input id="coap_dom" name="coap_dom" type="text" placeholder="128.140.49.53">
             </div>
             <div class="form-group">
-                <label>Preferred Mobile Networks
-                    <span class="tooltip-container">
-                        <span class="tooltip-icon">?</span>
-                        <span class="tooltip-text">Select mobile networks and arrange them in connection priority order.</span>
-                    </span>
-                </label>
-                <div class="operator-toolbar">
-                    <button id="operator_scan_button" type="button" onclick="startOperatorScan()" disabled>Scan Networks</button>
+                <div class="operator-label"><span>Preferred Cellular Operators</span>
+                    <button type="button" class="tooltip-container" aria-label="About preferred cellular operators" aria-describedby="operator_tooltip_text">
+                        <span class="tooltip-icon" aria-hidden="true">?</span>
+                        <span id="operator_tooltip_text" class="tooltip-text" role="tooltip">Select cellular operators and arrange them in connection priority order.</span>
+                    </button>
                 </div>
-                <div id="operator_status" class="operator-status">Scan to find available mobile networks.</div>
+                <div class="operator-toolbar">
+                    <button id="operator_scan_button" type="button" onclick="startOperatorScan()" disabled>Scan Operators</button>
+                </div>
+                <div id="operator_status" class="operator-status">Scan to find available cellular operators.</div>
                 <div id="operator_list" class="operator-list">
-                    <div class="loading">Loading saved networks...</div>
+                    <div class="loading">Loading saved operators...</div>
                 </div>
                 <input id="cell_ops" name="cell_ops" type="hidden" value="">
             </div>
@@ -350,7 +360,7 @@
         if (orderedGroups.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'loading';
-            empty.textContent = 'No preferred networks selected.';
+            empty.textContent = 'No saved cellular operators.';
             container.appendChild(empty);
             return;
         }
@@ -370,12 +380,24 @@
             const details = document.createElement('div');
             details.className = 'operator-details';
             const name = document.createElement('div');
-            name.className = 'operator-name';
-            name.textContent = group.name || 'Configured mobile network';
             const id = document.createElement('div');
             id.className = 'operator-id';
-            id.textContent = selected ? `Priority ${selectedIndex + 1} · MCC/MNC ${group.id}` :
-                `MCC/MNC ${group.id}`;
+            const idValue = document.createElement('span');
+            idValue.className = 'operator-id-value';
+            idValue.textContent = group.id;
+
+            if (group.name) {
+                name.className = 'operator-name';
+                name.textContent = group.name;
+                id.appendChild(document.createTextNode(selected ?
+                    `Priority ${selectedIndex + 1} · MCC/MNC ` : 'MCC/MNC '));
+                id.appendChild(idValue);
+            } else {
+                name.className = 'operator-saved-name';
+                name.appendChild(document.createTextNode('MCC/MNC '));
+                name.appendChild(idValue);
+                id.textContent = selected ? `Saved · Priority ${selectedIndex + 1}` : 'Saved';
+            }
             details.appendChild(name);
             details.appendChild(id);
             row.appendChild(details);
@@ -424,7 +446,7 @@
                 if (status.state === 'scanning') {
                     setOperatorScanActive(true);
                     document.getElementById('operator_status').textContent =
-                        'Scanning mobile networks. This can take several minutes...';
+                        'Scanning cellular operators. This can take up to 10 minutes...';
                     setTimeout(pollOperatorScan, 2000);
                     return;
                 }
@@ -433,15 +455,16 @@
                 if (status.state === 'succeeded') {
                     scannedOperatorGroups = groupScannedOperators(status.operators);
                     renderOperators();
-                    document.getElementById('operator_status').textContent =
-                        `Found ${scannedOperatorGroups.length} mobile network(s).`;
+                    const operatorCount = scannedOperatorGroups.length;
+                    document.getElementById('operator_status').textContent = operatorCount === 1 ?
+                        'Found 1 cellular operator.' : `Found ${operatorCount} cellular operators.`;
                 } else if (status.state === 'failed') {
                     document.getElementById('operator_status').textContent =
-                        `Mobile network scan failed${status.error ? `: ${status.error}` : '.'}`;
+                        `Cellular operator scan failed${status.error ? `: ${status.error}` : '.'}`;
                 }
             })
             .catch(error => {
-                console.error('Mobile network scan status failed:', error);
+                console.error('Cellular operator scan status failed:', error);
                 if (operatorScanActive) {
                     document.getElementById('operator_status').textContent =
                         'Connection interrupted. Checking scan status...';
@@ -454,7 +477,8 @@
         if (operatorScanActive) return;
 
         setOperatorScanActive(true);
-        document.getElementById('operator_status').textContent = 'Starting mobile network scan...';
+        document.getElementById('operator_status').textContent =
+            'Starting cellular operator scan...';
         fetch('/cellular-operators/scan', { method: 'POST' })
             .then(response => {
                 if (response.status === 409) {
@@ -465,10 +489,10 @@
                 pollOperatorScan();
             })
             .catch(error => {
-                console.error('Mobile network scan failed:', error);
+                console.error('Cellular operator scan failed:', error);
                 setOperatorScanActive(false);
                 document.getElementById('operator_status').textContent =
-                    'Unable to start mobile network scan.';
+                    'Unable to start cellular operator scan.';
             });
     }
 
@@ -535,8 +559,8 @@
                 renderOperators();
                 document.getElementById('operator_status').textContent =
                     selectedOperatorIds.length > 0 ?
-                        'Saved mobile networks shown below. Scan to update the list.' :
-                        'Scan to find available mobile networks.';
+                        'Saved cellular operators shown below. Scan to update the list.' :
+                        'Scan to find available cellular operators.';
                 settingsLoaded = true;
                 updateFormControls();
 
@@ -583,7 +607,7 @@
             if (operatorScanActive) {
                 event.preventDefault();
                 document.getElementById('operator_status').textContent =
-                    'Wait for the mobile network scan to finish before saving.';
+                    'Wait for the cellular operator scan to finish before saving.';
             }
         });
     });
