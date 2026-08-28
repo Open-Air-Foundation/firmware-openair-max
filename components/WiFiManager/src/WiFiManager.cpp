@@ -20,18 +20,35 @@
 #include <algorithm>
 #include <string>
 
+#define MILLIS() ((uint32_t)(esp_timer_get_time() / 1000))
+
+static const char *cellularOperatorScanStateToString(CellularOperatorScanState state) {
+  switch (state) {
+  case CellularOperatorScanState::Idle:
+    return "idle";
+  case CellularOperatorScanState::Scanning:
+    return "scanning";
+  case CellularOperatorScanState::Succeeded:
+    return "succeeded";
+  case CellularOperatorScanState::Failed:
+    return "failed";
+  }
+
+  return "unknown";
+}
+
 WiFiManager::WiFiManager()
     : _state(WM_STATE_INIT),
       _connectTimeout(WM_DEFAULT_CONNECT_TIMEOUT * 1000000ULL), // Convert to microseconds
-      _configPortalTimeout(WM_DEFAULT_PORTAL_TIMEOUT * 1000000ULL), _configPortalBlocking(true),
+      _configPortalTimeout(WM_DEFAULT_PORTAL_TIMEOUT * 1000UL), _configPortalBlocking(true),
       _breakAfterConfig(false), _apStaticIPSet(false), _staStaticIPSet(false),
       _minimumQuality(WM_MIN_QUALITY), _removeDuplicateAPs(CONFIG_WM_REMOVE_DUP_APS),
       _scanDispPerc(false), _lastScanTime(0), _scanInProgress(false), _captivePortalEnable(true),
       _captivePortalClientCheck(true), _webPortalClientCheck(true), _apNetif(nullptr),
       _staNetif(nullptr), _httpServer(nullptr), _wifiEventHandler(nullptr),
       _ipEventHandler(nullptr), _lastConxResult(WL_IDLE_STATUS), _portalAbortResult(false),
-      _configPortalStart(0), _connectStart(0), _dnsTaskHandle(nullptr), _dnsSocket(-1),
-      _dnsRunning(false), _initialized(false), _cleanupInProgress(false) {
+      _configPortalStartMs(0), _connectStart(0), _apClientCount(0), _dnsTaskHandle(nullptr),
+      _dnsSocket(-1), _dnsRunning(false), _initialized(false), _cleanupInProgress(false) {
   // Set wifi driver log level to only warning, to reduce unnecessary information
   esp_log_level_set("wifi", ESP_LOG_NONE);
 }
@@ -349,7 +366,8 @@ bool WiFiManager::startConfigPortalInternal(const char *apName, const char *apPa
 
   _state = WM_STATE_START_PORTAL;
   _portalAbortResult = false;
-  _configPortalStart = esp_timer_get_time();
+  _configPortalStartMs.store(MILLIS());
+  _apClientCount.store(0);
 
   WM_LOGI("Setting up WiFi subsystem...");
   // Setup WiFi if not already done
@@ -397,14 +415,6 @@ bool WiFiManager::startConfigPortalInternal(const char *apName, const char *apPa
     while (_state == WM_STATE_RUN_PORTAL || _state == WM_STATE_TRY_STA) {
       updateState();
       vTaskDelay(pdMS_TO_TICKS(100));
-
-      // Check for timeout
-      if (_configPortalTimeout > 0 &&
-          esp_timer_get_time() - _configPortalStart > _configPortalTimeout) {
-        WM_LOGW("Config portal timeout");
-        _state = WM_STATE_PORTAL_TIMEOUT;
-        break;
-      }
     }
 
     // Check final state but don't cleanup servers yet
@@ -461,7 +471,7 @@ bool WiFiManager::process() {
 
 // Configuration methods
 void WiFiManager::setConfigPortalTimeout(uint32_t seconds) {
-  _configPortalTimeout = seconds * 1000000ULL; // Convert to microseconds
+  _configPortalTimeout = seconds * 1000UL; // Convert to milliseconds
   WM_LOGD("Config portal timeout set to %u seconds", seconds);
 }
 
@@ -493,6 +503,15 @@ void WiFiManager::setConfigModeCallback(ConfigModeCallback callback) {
 
 void WiFiManager::setWebServerModeCallback(WebServerModeCallback callback) {
   _webServerModeCallback = callback;
+}
+
+void WiFiManager::setStartCellularOperatorScanCallback(StartCellularOperatorScanCallback callback) {
+  _startCellularOperatorScanCallback = callback;
+}
+
+void WiFiManager::setGetCellularOperatorScanStatusCallback(
+    GetCellularOperatorScanStatusCallback callback) {
+  _getCellularOperatorScanStatusCallback = callback;
 }
 
 // Status methods
@@ -638,7 +657,7 @@ bool WiFiManager::startHTTPServer() {
   config.server_port = WM_HTTP_PORT;
   config.max_open_sockets = 7;
   config.stack_size = CONFIG_WM_HTTP_STACK_SIZE;
-  config.max_uri_handlers = 12;                   // Increase handler limit
+  config.max_uri_handlers = WM_HTTP_MAX_HANDLERS;
   config.recv_wait_timeout = 60;                  // Increase receive timeout to 60 seconds
   config.send_wait_timeout = 60;                  // Increase send timeout to 60 seconds
   config.uri_match_fn = httpd_uri_match_wildcard; // Enable wildcard URI matching
@@ -657,6 +676,18 @@ bool WiFiManager::startHTTPServer() {
   httpd_uri_t scan_uri = {
       .uri = "/scan", .method = HTTP_GET, .handler = handleScan, .user_ctx = this};
   httpd_register_uri_handler(_httpServer, &scan_uri);
+
+  httpd_uri_t cellular_operator_scan_start_uri = {.uri = "/cellular-operators/scan",
+                                                  .method = HTTP_POST,
+                                                  .handler = handleStartCellularOperatorScan,
+                                                  .user_ctx = this};
+  httpd_register_uri_handler(_httpServer, &cellular_operator_scan_start_uri);
+
+  httpd_uri_t cellular_operator_scan_status_uri = {.uri = "/cellular-operators/scan",
+                                                   .method = HTTP_GET,
+                                                   .handler = handleGetCellularOperatorScanStatus,
+                                                   .user_ctx = this};
+  httpd_register_uri_handler(_httpServer, &cellular_operator_scan_status_uri);
 
   httpd_uri_t settingsave_uri = {.uri = "/settings-save",
                                  .method = HTTP_POST,
@@ -794,14 +825,15 @@ void WiFiManager::updateState() {
     }
     break;
 
-  case WM_STATE_RUN_PORTAL:
+  case WM_STATE_RUN_PORTAL: {
     // Check portal timeout
-    if (_configPortalTimeout > 0 &&
-        esp_timer_get_time() - _configPortalStart > _configPortalTimeout) {
+    if (_configPortalTimeout > 0 && _apClientCount.load() == 0 &&
+        MILLIS() - _configPortalStartMs.load() > _configPortalTimeout) {
       WM_LOGW("Config portal timeout");
       _state = WM_STATE_PORTAL_TIMEOUT;
     }
     break;
+  }
 
   default:
     break;
@@ -931,11 +963,13 @@ void WiFiManager::wifiEventHandler(void *arg, esp_event_base_t event_base, int32
     break;
 
   case WIFI_EVENT_AP_STOP:
+    manager->_apClientCount.store(0);
     WM_LOGI("AP stopped");
     break;
 
   case WIFI_EVENT_AP_STACONNECTED: {
     wifi_event_ap_staconnected_t *event = static_cast<wifi_event_ap_staconnected_t *>(event_data);
+    manager->_apClientCount.fetch_add(1);
     WM_LOGI("Station connected to AP, MAC: " MACSTR, MAC2STR(event->mac));
     break;
   }
@@ -943,6 +977,10 @@ void WiFiManager::wifiEventHandler(void *arg, esp_event_base_t event_base, int32
   case WIFI_EVENT_AP_STADISCONNECTED: {
     wifi_event_ap_stadisconnected_t *event =
         static_cast<wifi_event_ap_stadisconnected_t *>(event_data);
+    uint32_t clientCount = manager->_apClientCount.load();
+    if (clientCount > 0 && manager->_apClientCount.fetch_sub(1) == 1) {
+      manager->_configPortalStartMs.store(MILLIS());
+    }
     WM_LOGI("Station disconnected from AP, MAC: " MACSTR, MAC2STR(event->mac));
     break;
   }
@@ -1387,6 +1425,7 @@ esp_err_t WiFiManager::handleFetchSettings(httpd_req_t *req) {
   cJSON_AddStringToObject(root, "ssid", manager->_settings.ssid.c_str());
   cJSON_AddStringToObject(root, "http_dom", manager->_settings.httpDomain.c_str());
   cJSON_AddStringToObject(root, "coap_dom", manager->_settings.coapDomain.c_str());
+  cJSON_AddStringToObject(root, "cell_ops", manager->_settings.cellularOperators.c_str());
 
   char *json_string = cJSON_Print(root);
   if (json_string) {
@@ -1529,6 +1568,86 @@ esp_err_t WiFiManager::handleScan(httpd_req_t *req) {
   return ESP_OK;
 }
 
+esp_err_t WiFiManager::handleStartCellularOperatorScan(httpd_req_t *req) {
+  WM_LOGI("Cellular operator scan requested");
+  WiFiManager *manager = getManagerFromRequest(req);
+
+  if (!manager->_startCellularOperatorScanCallback) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_send(req, "Cellular operator scanning is unavailable", -1);
+    return ESP_OK;
+  }
+
+  if (!manager->_startCellularOperatorScanCallback()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_send(req, "Cellular operator scan is already running", -1);
+    return ESP_OK;
+  }
+
+  httpd_resp_set_status(req, "202 Accepted");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, "{\"state\":\"scanning\"}", -1);
+  return ESP_OK;
+}
+
+esp_err_t WiFiManager::handleGetCellularOperatorScanStatus(httpd_req_t *req) {
+  WiFiManager *manager = getManagerFromRequest(req);
+  if (!manager->_getCellularOperatorScanStatusCallback) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_send(req, "Cellular operator scanning is unavailable", -1);
+    return ESP_OK;
+  }
+
+  CellularOperatorScanStatus status = manager->_getCellularOperatorScanStatusCallback();
+  cJSON *root = cJSON_CreateObject();
+  if (!root) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON_AddStringToObject(root, "state", cellularOperatorScanStateToString(status.state));
+  if (!status.error.empty()) {
+    cJSON_AddStringToObject(root, "error", status.error.c_str());
+  }
+
+  if (status.state == CellularOperatorScanState::Succeeded) {
+    cJSON *operators = cJSON_AddArrayToObject(root, "operators");
+    if (!operators) {
+      cJSON_Delete(root);
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    for (const CellularOperatorRecord &operatorRecord : status.operators) {
+      cJSON *operatorJson = cJSON_CreateObject();
+      if (!operatorJson) {
+        cJSON_Delete(root);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+      }
+      std::string operatorId = std::to_string(operatorRecord.operatorId);
+      cJSON_AddStringToObject(operatorJson, "id", operatorId.c_str());
+      cJSON_AddStringToObject(operatorJson, "name", operatorRecord.operatorName.c_str());
+      cJSON_AddNumberToObject(operatorJson, "access_technology", operatorRecord.accessTech);
+      cJSON_AddItemToArray(operators, operatorJson);
+    }
+  }
+
+  char *jsonString = cJSON_Print(root);
+  if (!jsonString) {
+    cJSON_Delete(root);
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  esp_err_t result = httpd_resp_send(req, jsonString, strlen(jsonString));
+  free(jsonString);
+  cJSON_Delete(root);
+  return result;
+}
+
 std::string WiFiManager::urlDecode(const std::string &src) {
   std::string result;
   result.reserve(src.size());
@@ -1586,6 +1705,8 @@ SettingsForm WiFiManager::parseFormParams(char *buf) {
         form.httpDomain = value;
       } else if (key == "coap_dom") {
         form.coapDomain = value;
+      } else if (key == "cell_ops") {
+        form.cellularOperators = value;
       }
     }
 
@@ -1705,6 +1826,14 @@ esp_err_t WiFiManager::performSettingWifi(httpd_req_t *req, const SettingsForm &
 esp_err_t WiFiManager::handleSettingsSave(httpd_req_t *req) {
   WM_LOGD("WiFi save requested, content length: %d", req->content_len);
   WiFiManager *manager = getManagerFromRequest(req);
+
+  if (manager->_getCellularOperatorScanStatusCallback &&
+      manager->_getCellularOperatorScanStatusCallback().state ==
+          CellularOperatorScanState::Scanning) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_send(req, "Wait for the cellular operator scan to finish", -1);
+    return ESP_OK;
+  }
 
   // Handle larger POST requests with dynamic buffer
   size_t content_len = req->content_len;
@@ -1926,6 +2055,14 @@ esp_err_t WiFiManager::handleInfo(httpd_req_t *req) {
 esp_err_t WiFiManager::handleExit(httpd_req_t *req) {
   WM_LOGD("Exit requested");
   WiFiManager *manager = getManagerFromRequest(req);
+
+  if (manager->_getCellularOperatorScanStatusCallback &&
+      manager->_getCellularOperatorScanStatusCallback().state ==
+          CellularOperatorScanState::Scanning) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_send(req, "Wait for the cellular operator scan to finish", -1);
+    return ESP_OK;
+  }
 
   httpd_resp_set_type(req, "text/html");
   const char *exit_msg = "<html><body>"
