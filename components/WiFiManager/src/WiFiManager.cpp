@@ -505,8 +505,7 @@ void WiFiManager::setWebServerModeCallback(WebServerModeCallback callback) {
   _webServerModeCallback = callback;
 }
 
-void WiFiManager::setStartCellularOperatorScanCallback(
-    StartCellularOperatorScanCallback callback) {
+void WiFiManager::setStartCellularOperatorScanCallback(StartCellularOperatorScanCallback callback) {
   _startCellularOperatorScanCallback = callback;
 }
 
@@ -684,11 +683,10 @@ bool WiFiManager::startHTTPServer() {
                                                   .user_ctx = this};
   httpd_register_uri_handler(_httpServer, &cellular_operator_scan_start_uri);
 
-  httpd_uri_t cellular_operator_scan_status_uri = {
-      .uri = "/cellular-operators/scan",
-      .method = HTTP_GET,
-      .handler = handleGetCellularOperatorScanStatus,
-      .user_ctx = this};
+  httpd_uri_t cellular_operator_scan_status_uri = {.uri = "/cellular-operators/scan",
+                                                   .method = HTTP_GET,
+                                                   .handler = handleGetCellularOperatorScanStatus,
+                                                   .user_ctx = this};
   httpd_register_uri_handler(_httpServer, &cellular_operator_scan_status_uri);
 
   httpd_uri_t settingsave_uri = {.uri = "/settings-save",
@@ -1609,7 +1607,6 @@ esp_err_t WiFiManager::handleGetCellularOperatorScanStatus(httpd_req_t *req) {
   }
 
   cJSON_AddStringToObject(root, "state", cellularOperatorScanStateToString(status.state));
-  cJSON_AddNumberToObject(root, "generation", status.generation);
   if (!status.error.empty()) {
     cJSON_AddStringToObject(root, "error", status.error.c_str());
   }

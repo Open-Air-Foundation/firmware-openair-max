@@ -27,9 +27,8 @@ private:
 
   static void _taskEntry(void *arg);
   void _task();
-  CellularOperatorScanStatus _performScan(uint32_t generation);
-  void _scanOperators(CellularModuleA7672XX &cellularModule,
-                      CellularOperatorScanStatus &status);
+  CellularOperatorScanStatus _performScan();
+  void _scanOperators(CellularModuleA7672XX &cellularModule, CellularOperatorScanStatus &status);
 
   std::atomic<TaskHandle_t> _taskHandle{nullptr};
   std::mutex _mutex;

@@ -37,7 +37,6 @@ struct CellularOperatorRecord {
 
 struct CellularOperatorScanStatus {
   CellularOperatorScanState state = CellularOperatorScanState::Idle;
-  uint32_t generation = 0;
   std::string error;
   std::vector<CellularOperatorRecord> operators;
 };

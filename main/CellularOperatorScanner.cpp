@@ -18,8 +18,8 @@ bool CellularOperatorScanner::start() {
   }
 
   TaskHandle_t taskHandle = nullptr;
-  BaseType_t result =
-      xTaskCreate(_taskEntry, "CellOperatorScan", TASK_STACK_SIZE, this, TASK_PRIORITY, &taskHandle);
+  BaseType_t result = xTaskCreate(_taskEntry, "CellOperatorScan", TASK_STACK_SIZE, this,
+                                  TASK_PRIORITY, &taskHandle);
   if (result != pdPASS) {
     ESP_LOGE(TAG, "Failed to create cellular operator scan task");
     return false;
@@ -61,7 +61,6 @@ bool CellularOperatorScanner::requestScan() {
       return false;
     }
     _status.state = CellularOperatorScanState::Scanning;
-    _status.generation++;
     _status.error.clear();
     _status.operators.clear();
   }
@@ -97,13 +96,7 @@ void CellularOperatorScanner::_task() {
       continue;
     }
 
-    uint32_t generation = 0;
-    {
-      std::lock_guard<std::mutex> lock(_mutex);
-      generation = _status.generation;
-    }
-
-    CellularOperatorScanStatus status = _performScan(generation);
+    CellularOperatorScanStatus status = _performScan();
     {
       std::lock_guard<std::mutex> lock(_mutex);
       _status = status;
@@ -114,17 +107,16 @@ void CellularOperatorScanner::_task() {
   vTaskDelete(nullptr);
 }
 
-CellularOperatorScanStatus CellularOperatorScanner::_performScan(uint32_t generation) {
+CellularOperatorScanStatus CellularOperatorScanner::_performScan() {
   CellularOperatorScanStatus status;
   status.state = CellularOperatorScanState::Failed;
-  status.generation = generation;
 
   gpio_set_level(EN_CE_CARD, 1);
   vTaskDelay(pdMS_TO_TICKS(100));
 
   AirgradientUART serial;
-  bool serialStarted = serial.begin(UART_BAUD_PORT_CE_CARD, UART_BAUD_CE_CARD,
-                                    UART_RX_CE_CARD, UART_TX_CE_CARD);
+  bool serialStarted =
+      serial.begin(UART_BAUD_PORT_CE_CARD, UART_BAUD_CE_CARD, UART_RX_CE_CARD, UART_TX_CE_CARD);
 
   if (!serialStarted) {
     status.error = "uart_initialization_failed";
@@ -153,7 +145,7 @@ CellularOperatorScanStatus CellularOperatorScanner::_performScan(uint32_t genera
 }
 
 void CellularOperatorScanner::_scanOperators(CellularModuleA7672XX &cellularModule,
-                                              CellularOperatorScanStatus &status) {
+                                             CellularOperatorScanStatus &status) {
   auto scanResult = cellularModule.scanAvailableOperators();
   if (scanResult.status == CellReturnStatus::Error) {
     ESP_LOGW(TAG, "Operator scan failed, retrying once");
