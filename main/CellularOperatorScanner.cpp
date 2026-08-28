@@ -136,6 +136,8 @@ CellularOperatorScanStatus CellularOperatorScanner::_performScan(uint32_t genera
       status.error = "cellular_module_initialization_failed";
     } else if (cellularModule.isSimReady() != CellReturnStatus::Ok) {
       status.error = "sim_not_ready";
+    } else if (cellularModule.prepareOperatorScan(CellTechnology::LTE) != CellReturnStatus::Ok) {
+      status.error = "cellular_module_not_ready";
     } else {
       _scanOperators(cellularModule, status);
     }
@@ -153,6 +155,12 @@ CellularOperatorScanStatus CellularOperatorScanner::_performScan(uint32_t genera
 void CellularOperatorScanner::_scanOperators(CellularModuleA7672XX &cellularModule,
                                               CellularOperatorScanStatus &status) {
   auto scanResult = cellularModule.scanAvailableOperators();
+  if (scanResult.status == CellReturnStatus::Error) {
+    ESP_LOGW(TAG, "Operator scan failed, retrying once");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    scanResult = cellularModule.scanAvailableOperators();
+  }
+
   if (scanResult.status == CellReturnStatus::Ok) {
     status.operators.reserve(scanResult.data.size());
     for (const CellularModule::OperatorRecord &operatorRecord : scanResult.data) {
