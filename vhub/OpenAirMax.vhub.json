@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "372502d",
+  "rev": "d009b39",
   "product": {
     "slug": "max",
     "name": "Open Air Max",
@@ -60,9 +60,9 @@
       "applies_to": [
         "MAX"
       ],
-      "description": "External hardware watchdog is kicked at boot and before each sleep",
-      "expected_result": "Serial logs 'Watchdog reset' at boot and again before every deep sleep.",
-      "notes": "Requires: serial console. The external WDT forces a reset if not kicked within its window; fragmented sleep exists specifically to kick it during long idle periods."
+      "description": "External hardware watchdog is kicked periodically while awake and before sleep",
+      "expected_result": "Serial logs 'Watchdog reset' at boot, approximately every 60s while the device remains awake (including during a long System Settings Portal operator scan), and again before deep sleep.",
+      "notes": "Requires: serial console. A dedicated task feeds the external WDT every 60s while awake. Fragmented sleep still wakes periodically to feed it during long idle periods."
     },
     {
       "id": "boot.fragmented-sleep.long-schedule-chunked",
@@ -302,9 +302,9 @@
       "applies_to": [
         "MAX"
       ],
-      "description": "Portal times out after 180s, restarts, and re-runs the portal",
-      "expected_result": "With no save or exit, after 180s serial logs 'Config portal timeout', the device restarts, and the portal runs again.",
-      "notes": "Timeout leaves runSystemSettings unchanged, so a boot-button-enabled portal re-runs after restart. If the portal is running because WiFi mode is unconfigured, it can also re-run due to isWifiConfigured=false."
+      "description": "Portal timeout is suppressed while an AP client is connected",
+      "expected_result": "Keep a phone or computer associated with the portal AP for longer than 180s: the portal remains active and does not log 'Config portal timeout'. With no AP client connected, or after disconnecting once 180s has elapsed since portal startup, serial logs 'Config portal timeout', the device restarts, and the portal runs again.",
+      "notes": "The 180s timer starts when the portal starts and is not reset by client activity; timeout is gated only while at least one AP client is associated. Timeout leaves runSystemSettings unchanged, so the portal re-runs after restart."
     },
     {
       "id": "portal.home.exit-button",
@@ -358,8 +358,8 @@
         "MAX"
       ],
       "description": "Settings form is prefilled with the saved configuration",
-      "expected_result": "Opening the settings page prefills net_mode, HTTP URL Domain, CoAP Host, SSID, and APN from the current config (fetched from /fetch-settings).",
-      "notes": "max.cpp seeds these via setSettings() before the portal starts (networkMode, apn, httpDomain, coapDomain)."
+      "expected_result": "Opening the settings page prefills net_mode, HTTP URL Domain, CoAP Host, SSID, APN, and the saved cellular operators from the current config (fetched from /fetch-settings). Saved operators appear in priority order as MCC/MNC values with 'Saved · Priority N'.",
+      "notes": "Operator names are scan results and are not persisted; before a new scan, saved entries are identified by MCC/MNC. max.cpp seeds the form via setSettings() before the portal starts."
     },
     {
       "id": "portal.settings.scan-shows-networks",
@@ -391,8 +391,19 @@
         "MAX"
       ],
       "description": "Network-mode toggle shows the matching settings section",
-      "expected_result": "Selecting WiFi shows the WiFi section (SSID/password); selecting Cellular shows the Cellular section (APN + CoAP Host).",
+      "expected_result": "Selecting WiFi shows the WiFi section (SSID/password); selecting Cellular shows the Cellular section (APN, CoAP Host, and Preferred Cellular Operators with the Scan Operators button).",
       "notes": "toggleNetworkSettings() hides/shows the two form sections."
+    },
+    {
+      "id": "portal.settings.cellular-operator-scan",
+      "category": "System Settings Portal",
+      "sub_category": "Settings Page",
+      "applies_to": [
+        "MAX"
+      ],
+      "description": "Cellular operator scan populates a selectable priority list",
+      "expected_result": "In Cellular mode, tapping the '?' beside Preferred Cellular Operators shows its help text. Clicking 'Scan Operators' shows 'Starting cellular operator scan...' then 'Scanning cellular operators. This can take up to 10 minutes...'; Scan Operators and Save Settings remain disabled until scanning finishes. On success, the page shows either 'Found 1 cellular operator.' or 'Found <N> cellular operators.' and rows containing operator names and bold MCC/MNC values. Selecting operators assigns Priority N, and the arrow buttons change their order when at least two are selected.",
+      "notes": "Requires: ready SIM and cellular coverage. A scan can take up to 10 minutes. At least two discovered operators are needed to verify reordering; one result is sufficient to verify scanning and selection. The portal must remain responsive throughout the scan."
     },
     {
       "id": "portal.settings.ssid-select-autofill",
@@ -456,9 +467,9 @@
       "applies_to": [
         "MAX"
       ],
-      "description": "Cellular save persists APN, sets cellular mode, and restarts into normal flow",
-      "expected_result": "After cellular save the network mode is set to Cellular, the new APN is persisted, and the device restarts into the normal flow; the saved APN is then used for cellular registration.",
-      "notes": "Cellular path restarts (max.cpp esp_restart), unlike WiFi which continues in-place. Verify APN use via serial AT logs / successful registration."
+      "description": "Cellular save persists APN and operator priority, then restarts into normal flow",
+      "expected_result": "After cellular save the network mode is set to Cellular, the new APN and selected operator order are persisted, and the device restarts into the normal flow. The boot configuration logs 'cellularOperators: <MCCMNC>:<AcT>,...' in the selected priority order; the saved APN is then used for cellular registration.",
+      "notes": "Changing the operator list also resets registration progress; after restart the configuration logs 'currentOperatorId: 0' and 'cellularRegFailCount: 0'. Cellular save restarts, unlike WiFi which continues in-place."
     },
     {
       "id": "portal.cellular-save.coap-host-field",
@@ -908,8 +919,8 @@
         "MAX"
       ],
       "description": "Registration walks the operator list until one succeeds",
-      "expected_result": "The module tries operators in order, logging 'Configuring manual operator: <id> with AcT: <n> (index <i> of <m>)' for each, and stops at the first that registers.",
-      "notes": "Requires: cellular mode with multiple reachable operators to observe more than one attempt."
+      "expected_result": "The module tries operators in order, logging 'Configuring manual operator: <id> with AcT: <n> (index <i> of <m>)' for each, and stops at the first that registers. When configured through the portal, the first attempted MCC/MNC matches Priority 1 and subsequent attempts follow the saved priority order.",
+      "notes": "Requires: cellular mode with multiple reachable operators to observe more than one attempt. One MCC/MNC may have multiple access-technology entries; those entries remain grouped at that operator's priority."
     },
     {
       "id": "transmission.cellular.max-3-iterations",
