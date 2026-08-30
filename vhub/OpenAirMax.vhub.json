@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "d009b39",
+  "rev": "901678e",
   "product": {
     "slug": "max",
     "name": "Open Air Max",
@@ -402,8 +402,8 @@
         "MAX"
       ],
       "description": "Cellular operator scan populates a selectable priority list",
-      "expected_result": "In Cellular mode, tapping the '?' beside Preferred Cellular Operators shows its help text. Clicking 'Scan Operators' shows 'Starting cellular operator scan...' then 'Scanning cellular operators. This can take up to 10 minutes...'; Scan Operators and Save Settings remain disabled until scanning finishes. On success, the page shows either 'Found 1 cellular operator.' or 'Found <N> cellular operators.' and rows containing operator names and bold MCC/MNC values. Selecting operators assigns Priority N, and the arrow buttons change their order when at least two are selected.",
-      "notes": "Requires: ready SIM and cellular coverage. A scan can take up to 10 minutes. At least two discovered operators are needed to verify reordering; one result is sufficient to verify scanning and selection. The portal must remain responsive throughout the scan."
+      "expected_result": "In Cellular mode, tapping the '?' beside Preferred Cellular Operators shows its help text. Clicking 'Scan Operators' immediately shows a full-page 'Scanning Cellular Operators' overlay that blocks all settings interaction and reports that scanning can take up to 10 minutes. On success, the overlay closes, the page shows either 'Found 1 cellular operator.' or 'Found <N> cellular operators.', and rows contain operator names and bold MCC/MNC values. Selecting operators assigns Priority N, and the arrow buttons change their order when at least two are selected.",
+      "notes": "Requires: ready SIM and cellular coverage. Keep the monitor powered and the test device connected to the AirGradient WiFi. If the connection is interrupted, the overlay remains and shows 'Connection interrupted. Reconnecting...' while polling continues. Reloading the page during an active scan must restore the overlay."
     },
     {
       "id": "portal.settings.ssid-select-autofill",
