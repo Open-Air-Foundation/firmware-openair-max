@@ -144,6 +144,15 @@
         .operator-actions { display: flex; gap: 4px; }
         .operator-actions button { width: 30px; height: 30px; padding: 0; border: 1px solid #666; border-radius: 3px; background: #555; color: #fff; cursor: pointer; }
         .operator-actions button:disabled { opacity: 0.35; cursor: default; }
+        body.operator-scan-active { overflow: hidden; }
+        .operator-scan-overlay { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; background: rgba(20, 20, 20, 0.92); }
+        .operator-scan-overlay.active { display: flex; }
+        .operator-scan-dialog { width: 100%; max-width: 280px; padding: 24px 20px; box-sizing: border-box; border: 1px solid #555; border-radius: 5px; background: #333; text-align: center; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
+        .operator-scan-spinner { width: 42px; height: 42px; margin: 0 auto 18px; border: 4px solid #555; border-top-color: #1fa3ec; border-radius: 50%; animation: operator-scan-spin 1s linear infinite; }
+        .operator-scan-dialog h2 { margin: 0 0 12px; color: #eee; font-size: 1.2em; }
+        .operator-scan-message { margin: 0 0 12px; color: #eee; font-size: 0.9em; line-height: 1.5; }
+        .operator-scan-hint { margin: 0; color: #aaa; font-size: 0.8em; line-height: 1.5; }
+        @keyframes operator-scan-spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -246,6 +255,15 @@
             <button id="save_button" type="submit" disabled>Save Settings</button>
         </div>
     </form>
+</div>
+
+<div id="operator_scan_overlay" class="operator-scan-overlay" role="dialog" aria-modal="true" aria-labelledby="operator_scan_title" aria-describedby="operator_scan_overlay_status operator_scan_hint" aria-hidden="true" tabindex="-1">
+    <div class="operator-scan-dialog">
+        <div class="operator-scan-spinner" aria-hidden="true"></div>
+        <h2 id="operator_scan_title">Scanning Cellular Operators</h2>
+        <p id="operator_scan_overlay_status" class="operator-scan-message" aria-live="polite">Searching for available operators. This can take up to 10 minutes.</p>
+        <p id="operator_scan_hint" class="operator-scan-hint">Keep the monitor powered and this device connected to monitor's WiFi</p>
+    </div>
 </div>
 
 <script>
@@ -429,8 +447,25 @@
     }
 
     function setOperatorScanActive(active) {
+        const wasActive = operatorScanActive;
         operatorScanActive = active;
+        const overlay = document.getElementById('operator_scan_overlay');
+        const page = document.querySelector('.wrap');
+        overlay.classList.toggle('active', active);
+        overlay.setAttribute('aria-hidden', String(!active));
+        document.body.classList.toggle('operator-scan-active', active);
+        page.inert = active;
+        page.setAttribute('aria-busy', String(active));
+        if (active && !wasActive) {
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+            overlay.focus();
+        }
         updateFormControls();
+    }
+
+    function setOperatorScanMessage(message) {
+        document.getElementById('operator_status').textContent = message;
+        document.getElementById('operator_scan_overlay_status').textContent = message;
     }
 
     function updateFormControls() {
@@ -445,8 +480,8 @@
             .then(status => {
                 if (status.state === 'scanning') {
                     setOperatorScanActive(true);
-                    document.getElementById('operator_status').textContent =
-                        'Scanning cellular operators. This can take up to 10 minutes...';
+                    setOperatorScanMessage(
+                        'Scanning cellular operators. This can take up to 10 minutes...');
                     setTimeout(pollOperatorScan, 2000);
                     return;
                 }
@@ -456,18 +491,17 @@
                     scannedOperatorGroups = groupScannedOperators(status.operators);
                     renderOperators();
                     const operatorCount = scannedOperatorGroups.length;
-                    document.getElementById('operator_status').textContent = operatorCount === 1 ?
-                        'Found 1 cellular operator.' : `Found ${operatorCount} cellular operators.`;
+                    setOperatorScanMessage(operatorCount === 1 ? 'Found 1 cellular operator.' :
+                        `Found ${operatorCount} cellular operators.`);
                 } else if (status.state === 'failed') {
-                    document.getElementById('operator_status').textContent =
-                        `Cellular operator scan failed${status.error ? `: ${status.error}` : '.'}`;
+                    setOperatorScanMessage(
+                        `Cellular operator scan failed${status.error ? `: ${status.error}` : '.'}`);
                 }
             })
             .catch(error => {
                 console.error('Cellular operator scan status failed:', error);
                 if (operatorScanActive) {
-                    document.getElementById('operator_status').textContent =
-                        'Connection interrupted. Checking scan status...';
+                    setOperatorScanMessage('Connection interrupted. Reconnecting...');
                     setTimeout(pollOperatorScan, 2000);
                 }
             });
@@ -477,8 +511,7 @@
         if (operatorScanActive) return;
 
         setOperatorScanActive(true);
-        document.getElementById('operator_status').textContent =
-            'Starting cellular operator scan...';
+        setOperatorScanMessage('Starting cellular operator scan...');
         fetch('/cellular-operators/scan', { method: 'POST' })
             .then(response => {
                 if (response.status === 409) {
@@ -491,8 +524,7 @@
             .catch(error => {
                 console.error('Cellular operator scan failed:', error);
                 setOperatorScanActive(false);
-                document.getElementById('operator_status').textContent =
-                    'Unable to start cellular operator scan.';
+                setOperatorScanMessage('Unable to start cellular operator scan.');
             });
     }
 
@@ -606,8 +638,13 @@
         document.querySelector('form').addEventListener('submit', function(event) {
             if (operatorScanActive) {
                 event.preventDefault();
-                document.getElementById('operator_status').textContent =
-                    'Wait for the cellular operator scan to finish before saving.';
+                setOperatorScanMessage('Wait for the cellular operator scan to finish before saving.');
+            }
+        });
+        document.addEventListener('keydown', function(event) {
+            if (operatorScanActive && event.key === 'Tab') {
+                event.preventDefault();
+                document.getElementById('operator_scan_overlay').focus();
             }
         });
     });
