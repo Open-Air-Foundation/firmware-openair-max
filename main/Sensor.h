@@ -8,6 +8,7 @@
 #ifndef AG_SENSOR_H
 #define AG_SENSOR_H
 
+#include <cstdint>
 #include "AirgradientIICSerial.h"
 #include "AirgradientUART.h"
 #include "BQ25672.h"
@@ -23,6 +24,8 @@
 struct MaxSensorPayload {
   AirgradientClient::CommonPayload common;
   AirgradientClient::ExtraPayload extra;
+  // UTC Unix seconds at measurement completion; zero means unsynchronized.
+  uint32_t timestamp = 0;
 };
 
 class Sensor {

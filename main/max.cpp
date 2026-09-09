@@ -410,8 +410,13 @@ extern "C" void app_main(void) {
 
   // Start measure sensor sequence
   sensor.startMeasures(DEFAULT_MEASURE_ITERATION_COUNT, DEFAULT_MEASURE_INTERVAL_MS_PER_ITERATION);
-  sensor.printMeasures();
   g_measuresResult = sensor.getLastAverageMeasure();
+  if (!isUsingWifi && xLastTimeSync != 0) {
+    g_measuresResult.timestamp = static_cast<uint32_t>(time(nullptr));
+    ESP_LOGI(TAG, "Measurement timestamp: %" PRIu32 " (UTC epoch seconds)",
+             g_measuresResult.timestamp);
+  }
+  sensor.printMeasures();
   // Calculate VOC/NOx index from the averaged raw signals. Raw values are kept
   // and sent alongside the calculated index.
   int tvocIndex = DEFAULT_INVALID_TVOC;
@@ -1038,7 +1043,8 @@ bool sendMeasuresByCellular(unsigned long wakeUpCounter, PayloadCache &payloadCa
     payloadCache.peekAtIndex(i, &tmp);
     int element = i - idx; // - idx because it needs to start from 0
     payload.payloadBuffer[element].common = tmp.common;
-    payload.payloadBuffer[element].ext.extra = tmp.extra; 
+    payload.payloadBuffer[element].ext.extra = tmp.extra;
+    payload.payloadBuffer[element].timestamp = tmp.timestamp;
     payload.bufferCount++;
   }
 
@@ -1124,6 +1130,7 @@ bool sendMeasuresByWiFi(unsigned long wakeUpCounter, MaxSensorPayload sensorPayl
   AirgradientClient::AirgradientPayload payload;
   payload.payloadBuffer[0].common = sensorPayload.common;
   payload.payloadBuffer[0].ext.extra = sensorPayload.extra;
+  payload.payloadBuffer[0].timestamp = sensorPayload.timestamp;
   payload.bufferCount = 1;
   payload.signal = getNetworkSignalStrength();
   ESP_LOGI(TAG, "Signal strength: %d", payload.signal);
@@ -1176,6 +1183,7 @@ bool sendMeasuresUsingMqtt(unsigned long wakeUpCounter, PayloadCache &payloadCac
     payloadCache.peekAtIndex(i, &tmp);
     payload.payloadBuffer[i].common = tmp.common;
     payload.payloadBuffer[i].ext.extra = tmp.extra;
+    payload.payloadBuffer[i].timestamp = tmp.timestamp;
     payload.bufferCount++;
   }
 
