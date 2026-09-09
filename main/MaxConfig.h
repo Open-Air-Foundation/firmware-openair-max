@@ -81,6 +81,12 @@ constexpr gpio_num_t IO_BOOT_BUTTON = GPIO_NUM_9;
 #define TIMEOUT_REGISTER_NETWORK_ON_FIRST_BOOT_MS (5 * 60 * 1000) // 5 minutes
 #define TIMEOUT_REGISTER_NETWORK_WAKEUP_CYCLE_MS (100 * 1000)     // 100 seconds
 
+#define NTP_SERVER_HOSTNAME "time.google.com"
+#define TIME_SYNC_INTERVAL_SECONDS (60 * 60)
+#define TIME_SYNC_TIMEOUT_MS 60000
+#define TIME_SYNC_BOOT_ATTEMPTS 3
+#define TIME_SYNC_RETRY_DELAY_MS 10000
+
 #define MAX_SLEEP_TIME 300 // This is maximum it able to sleep before ext HW watchdog reset
 
 #endif

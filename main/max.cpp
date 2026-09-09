@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <string>
+#include <time.h>
+#include <sys/time.h>
 
 #include <fcntl.h>
 #include "airgradientOtaWifi.h"
@@ -67,9 +69,13 @@ RTC_DATA_ATTR unsigned long xHttpCacheQueueIndex = 0;
 // Help to check if there's a measure interval change that make previous payload cache invalid
 RTC_DATA_ATTR int xMeasureInterval = 180;
 
+// Zero means time has not been synchronized since cold boot.
+RTC_DATA_ATTR time_t xLastTimeSync = 0;
+
 // Networking tasks variables
 #define BIT_SENSOR_MEASURES_FINISH (1 << 0)
 #define BIT_TRANSMISSION_FINISH (1 << 1)
+#define BIT_INITIAL_TIME_READY (1 << 2)
 static TaskHandle_t g_handleNetworkTask = NULL;
 static TaskHandle_t g_handleExtWatchdogTask = NULL;
 static EventGroupHandle_t g_syncGroup;
@@ -163,6 +169,9 @@ static int getNetworkSignalStrength();
 static bool initializeNetwork(unsigned long wakeUpCounter);
 static bool initializeWiFiNetwork(unsigned long wakeUpCounter);
 static bool initializeCellularNetwork(unsigned long wakeUpCounter);
+static void printWakeupTime();
+static bool setSystemTime(int64_t unixSeconds);
+static bool synchronizeTime(bool firstBoot);
 
 static bool checkRemoteConfiguration(unsigned long wakeUpCounter);
 static bool checkForFirmwareUpdate(unsigned long wakeUpCounter);
@@ -179,7 +188,11 @@ extern "C" void app_main(void) {
   if (wakeUpReason != ESP_SLEEP_WAKEUP_UNDEFINED) {
     initConsole();
     vTaskDelay(pdMS_TO_TICKS(1000));
+  }
 
+  printWakeupTime();
+
+  if (wakeUpReason != ESP_SLEEP_WAKEUP_UNDEFINED) {
     // Check if its not the time to do measurements
     if (xMeasurementLeadTimeSeconds > 0) {
       int nextMeasurementScheduleSeconds = xMeasurementLeadTimeSeconds;
@@ -345,8 +358,19 @@ extern "C" void app_main(void) {
   if (g_isSendMeasuresCycle || g_isFullTransmissionCycle || isUsingWifi) {
     ESP_LOGI(TAG, "Time for transmission, run networking tasks...");
     g_syncGroup = xEventGroupCreate();
-    xTaskCreate(networkingTask, "NetworkingTask", NETWORKING_TASK_STACK_SIZE, (void *)wakeUpCounter,
-                5, &g_handleNetworkTask);
+    if (g_syncGroup == nullptr ||
+        xTaskCreate(networkingTask, "NetworkingTask", NETWORKING_TASK_STACK_SIZE,
+                    (void *)wakeUpCounter, 5, &g_handleNetworkTask) != pdPASS) {
+      ESP_LOGE(TAG, "Failed to start networking task, restarting");
+      esp_restart();
+    }
+  }
+
+  if (!isUsingWifi && wakeUpCounter == 0) {
+    ESP_LOGI(TAG, "Cold boot: waiting for initial time synchronization before measuring");
+    xEventGroupWaitBits(g_syncGroup, BIT_INITIAL_TIME_READY, pdTRUE, pdFALSE, portMAX_DELAY);
+    // Registration/synchronization can take longer than one measurement interval.
+    wakeUpTimeMs = MILLIS();
   }
 
   ESP_LOGI(TAG, "Wait for sensors to warmup before initialization");
@@ -918,6 +942,77 @@ bool initializeWiFiNetwork(unsigned long wakeUpCounter) {
   return true;
 }
 
+void printWakeupTime() {
+  if (xLastTimeSync == 0) {
+    ESP_LOGI(TAG, "Wakeup time: not synchronized");
+    return;
+  }
+
+  const time_t now = time(nullptr);
+  struct tm utc = {};
+  gmtime_r(&now, &utc);
+  char formattedTime[32];
+  strftime(formattedTime, sizeof(formattedTime), "%Y-%m-%d %H:%M:%S UTC", &utc);
+  ESP_LOGI(TAG, "Wakeup time: %s (last synchronization %llds ago)", formattedTime,
+           static_cast<long long>(now - xLastTimeSync));
+}
+
+bool setSystemTime(int64_t unixSeconds) {
+  struct timeval tv = {};
+  tv.tv_sec = static_cast<time_t>(unixSeconds);
+  if (settimeofday(&tv, nullptr) != 0) {
+    return false;
+  }
+
+  xLastTimeSync = tv.tv_sec;
+  struct tm utc = {};
+  gmtime_r(&tv.tv_sec, &utc);
+  char formattedTime[32];
+  strftime(formattedTime, sizeof(formattedTime), "%Y-%m-%d %H:%M:%S UTC", &utc);
+  ESP_LOGI(TAG, "Time synchronized: %s", formattedTime);
+  return true;
+}
+
+bool synchronizeTime(bool firstBoot) {
+  const time_t now = time(nullptr);
+  if (!firstBoot && xLastTimeSync != 0 && now >= xLastTimeSync &&
+      now - xLastTimeSync < TIME_SYNC_INTERVAL_SECONDS) {
+    ESP_LOGI(TAG, "Clock retained: UTC epoch %lld, last synchronization %llds ago",
+             static_cast<long long>(now), static_cast<long long>(now - xLastTimeSync));
+    return true;
+  }
+
+  if (!g_networkReady || g_agClient == nullptr || !g_agClient->isClientReady() ||
+      g_cellularCard == nullptr) {
+    ESP_LOGW(TAG, "Network unavailable for time synchronization");
+    return false;
+  }
+
+  const int attempts = firstBoot ? TIME_SYNC_BOOT_ATTEMPTS : 1;
+  for (int attempt = 1; attempt <= attempts; attempt++) {
+    ESP_LOGI(TAG, "Synchronizing time with %s (attempt %d/%d)", NTP_SERVER_HOSTNAME, attempt,
+             attempts);
+    auto result = g_cellularCard->retrieveNetworkTime(NTP_SERVER_HOSTNAME, TIME_SYNC_TIMEOUT_MS);
+    // Reject the modem's factory/default date even if it reports success.
+    if (result.status == CellReturnStatus::Ok && result.data >= 1704067200LL) { // 2024-01-01 UTC
+      if (setSystemTime(result.data)) {
+        return true;
+      }
+      ESP_LOGE(TAG, "Failed to set system time");
+    } else {
+      ESP_LOGW(TAG, "No valid NTP time received (status %d)", static_cast<int>(result.status));
+    }
+
+    if (attempt < attempts) {
+      vTaskDelay(pdMS_TO_TICKS(TIME_SYNC_RETRY_DELAY_MS));
+    }
+  }
+
+  ESP_LOGW(TAG, "Time synchronization failed; last successful UTC epoch: %lld",
+           static_cast<long long>(xLastTimeSync));
+  return false;
+}
+
 bool sendMeasuresByCellular(unsigned long wakeUpCounter, PayloadCache &payloadCache,
                             int measureInterval) {
   if (!g_networkReady) {
@@ -1183,6 +1278,18 @@ void networkingTask(void *args) {
   int wakeUpCounter = (int)args;
   if (!initializeNetwork(wakeUpCounter)) {
     ESP_LOGI(TAG, "Cannot connect to network, will skip transmission");
+  }
+
+  if (g_configuration.getNetworkOption() == NetworkOption::Cellular) {
+    bool timeReady = synchronizeTime(wakeUpCounter == 0);
+    if (wakeUpCounter == 0) {
+      if (!timeReady) {
+        ESP_LOGE(TAG, "Initial time synchronization failed, restarting in 5s");
+        g_statusLed.blink(5000, 500);
+        esp_restart();
+      }
+      xEventGroupSetBits(g_syncGroup, BIT_INITIAL_TIME_READY);
+    }
   }
 
   // Will block until sensor finish measures
