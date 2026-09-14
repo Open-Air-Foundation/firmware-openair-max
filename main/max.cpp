@@ -965,11 +965,25 @@ void printWakeupTime() {
 bool setSystemTime(int64_t unixSeconds) {
   struct timeval tv = {};
   tv.tv_sec = static_cast<time_t>(unixSeconds);
+  const time_t previousSync = xLastTimeSync;
+  struct timeval previousTime = {};
+  const bool havePreviousTime = previousSync != 0 && gettimeofday(&previousTime, nullptr) == 0;
   if (settimeofday(&tv, nullptr) != 0) {
     return false;
   }
 
   xLastTimeSync = tv.tv_sec;
+  if (havePreviousTime && tv.tv_sec > previousSync) {
+    const int64_t elapsedSeconds = tv.tv_sec - previousSync;
+    const double offsetSeconds = static_cast<double>(previousTime.tv_sec - tv.tv_sec) +
+                                 static_cast<double>(previousTime.tv_usec) / 1000000.0;
+    const double driftPerHour = offsetSeconds * 3600.0 / elapsedSeconds;
+    ESP_LOGI(TAG,
+             "Estimated clock drift: offset=%+.3fs (positive=ahead), elapsed=%" PRId64
+             "s, rate=%+.3fs/hour",
+             offsetSeconds, elapsedSeconds, driftPerHour);
+  }
+
   struct tm utc = {};
   gmtime_r(&tv.tv_sec, &utc);
   char formattedTime[32];
@@ -997,15 +1011,22 @@ bool synchronizeTime(bool firstBoot) {
   for (int attempt = 1; attempt <= attempts; attempt++) {
     ESP_LOGI(TAG, "Synchronizing time with %s (attempt %d/%d)", NTP_SERVER_HOSTNAME, attempt,
              attempts);
+    const int64_t requestStartedUs = esp_timer_get_time();
     auto result = g_cellularCard->retrieveNetworkTime(NTP_SERVER_HOSTNAME, TIME_SYNC_TIMEOUT_MS);
+    const int64_t requestDurationMs = (esp_timer_get_time() - requestStartedUs) / 1000;
+    bool timeSet = false;
     // Reject the modem's factory/default date even if it reports success.
     if (result.status == CellReturnStatus::Ok && result.data >= 1704067200LL) { // 2024-01-01 UTC
-      if (setSystemTime(result.data)) {
-        return true;
+      timeSet = setSystemTime(result.data);
+      if (!timeSet) {
+        ESP_LOGE(TAG, "Failed to set system time");
       }
-      ESP_LOGE(TAG, "Failed to set system time");
     } else {
       ESP_LOGW(TAG, "No valid NTP time received (status %d)", static_cast<int>(result.status));
+    }
+    ESP_LOGI(TAG, "Time synchronization request took %" PRId64 "ms", requestDurationMs);
+    if (timeSet) {
+      return true;
     }
 
     if (attempt < attempts) {
