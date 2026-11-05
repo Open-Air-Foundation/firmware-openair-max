@@ -59,10 +59,6 @@ RTC_DATA_ATTR unsigned long xWakeUpCounter = 0;
 // Help in the process of fragmented sleep
 RTC_DATA_ATTR int xMeasurementLeadTimeSeconds = 0;
 
-// Hold the index of measures queue on which http post should start send measures
-// eg. xHttpCacheQueueIndex = 3, then for [q1, q2, q3, q4, q5, q6] should only send q4, q5, q6
-RTC_DATA_ATTR unsigned long xHttpCacheQueueIndex = 0;
-
 // Hold the previous wake up cycle measure interval
 // Help to check if there's a measure interval change that make previous payload cache invalid
 RTC_DATA_ATTR int xMeasureInterval = 180;
@@ -421,7 +417,6 @@ extern "C" void app_main(void) {
         "previous payload cache",
         xMeasureInterval, measureInterval);
     g_payloadCache.clean();
-    xHttpCacheQueueIndex = 0;
   }
   xMeasureInterval = measureInterval;
 
@@ -930,20 +925,12 @@ bool sendMeasuresByCellular(unsigned long wakeUpCounter, PayloadCache &payloadCa
   PayloadCacheType tmp;
   ESP_LOGI(TAG, "cache size: %d", payloadCache.getSize());
 
-  // Define start index of which needs to be included as HTTP post payload
-  int idx = 0;
-  if (xHttpCacheQueueIndex > 0) {
-    idx = xHttpCacheQueueIndex;
-    ESP_LOGI(TAG, "HTTP cache queue index start from %d", idx);
-  }
-
   // Retrieve measurements from the cache
   payload.bufferCount = 0;
-  for (int i = idx; i < payloadCache.getSize(); i++) {
+  for (int i = 0; i < payloadCache.getSize(); i++) {
     payloadCache.peekAtIndex(i, &tmp);
-    int element = i - idx; // - idx because it needs to start from 0
-    payload.payloadBuffer[element].common = tmp.common;
-    payload.payloadBuffer[element].ext.extra = tmp.extra; 
+    payload.payloadBuffer[i].common = tmp.common;
+    payload.payloadBuffer[i].ext.extra = tmp.extra;
     payload.bufferCount++;
   }
 
@@ -1062,11 +1049,7 @@ bool sendMeasuresUsingMqtt(unsigned long wakeUpCounter, PayloadCache &payloadCac
   }
 
   if (g_agClient->mqttConnect(uri.c_str()) == false) {
-    ESP_LOGE(
-        TAG,
-        "Skip send measures through MQTT, failed to connect. Will retry publish on next schedule");
-    // Please see comment on mqttPublishMeasures below on why set the cache
-    xHttpCacheQueueIndex = payloadCache.getSize();
+    ESP_LOGE(TAG, "Skip send measures through MQTT, failed to connect");
     return false;
   }
 
@@ -1089,17 +1072,9 @@ bool sendMeasuresUsingMqtt(unsigned long wakeUpCounter, PayloadCache &payloadCac
   payload.signal = getNetworkSignalStrength();
   ESP_LOGI(TAG, "Signal strength: %d", payload.signal);
 
-  // When success, clean the cache (because already send to both HTTP and MQTT)
-  //  and also reset xHttpCacheQueueIndex to make sure post through both HTTP and MQTT start fresh
-  // But if failed, since HTTP already send all the measures on cache,
-  //  set xHttpCacheQueueIndex to the cache current size as the start index of which HTTP post measures from queue
   bool success = g_agClient->mqttPublishMeasures(payload);
-  if (success) {
-    payloadCache.clean();
-    xHttpCacheQueueIndex = 0;
-  } else {
-    ESP_LOGI(TAG, "Retry publish on next schedule");
-    xHttpCacheQueueIndex = payloadCache.getSize();
+  if (!success) {
+    ESP_LOGE(TAG, "Failed to publish measures through MQTT");
   }
 
   // Ignore disconnect result
@@ -1190,16 +1165,17 @@ void networkingTask(void *args) {
 
   // Send measures
   if (g_configuration.getNetworkOption() == NetworkOption::Cellular) {
-    if (g_isSendMeasuresCycle) {
+    if (g_isSendMeasuresCycle && g_payloadCache.getSize() > 0) {
       bool success = sendMeasuresByCellular(wakeUpCounter, g_payloadCache, xMeasureInterval);
       if (success) {
         if (g_configuration.getMqttBrokerUrl().empty()) {
           ESP_LOGI(TAG, "MQTT is not enabled, skip");
-          g_payloadCache.clean();
-          xHttpCacheQueueIndex = 0;
-        } else {
-          sendMeasuresUsingMqtt(wakeUpCounter, g_payloadCache);
+        } else if (!sendMeasuresUsingMqtt(wakeUpCounter, g_payloadCache)) {
+          ESP_LOGW(TAG, "CoAP succeeded; clearing cache despite MQTT failure. "
+                        "MQTT batch will not be retried");
         }
+        // CoAP determines cache retention; MQTT is best effort.
+        g_payloadCache.clean();
       }
     }
   } else {
