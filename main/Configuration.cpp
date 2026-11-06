@@ -8,6 +8,7 @@
 #include "Configuration.h"
 #include "MaxConfig.h"
 #include "airgradientCellularClient.h"
+#include "common.h"
 #include "esp_log.h"
 #include "ArduinoJson.h"
 #include "nvs.h"
@@ -35,6 +36,21 @@
 #define NVS_KEY_CELLULAR_OPERATORS "cellOps"
 #define NVS_KEY_CURRENT_OPERATOR_ID "cellOpId"
 #define NVS_KEY_CELLULAR_REG_FAIL_COUNT "cellRegFail"
+
+static std::string redactMqttUriForLog(const std::string &uri) {
+  if (uri.empty()) {
+    return uri;
+  }
+  std::string protocol, username, password, host;
+  int port;
+  if (!Common::parseUri(uri, protocol, username, password, host, port)) {
+    return "[invalid MQTT URI]";
+  }
+  if (username.empty()) {
+    return uri;
+  }
+  return (protocol.empty() ? "" : protocol + "://") + "***@" + uri.substr(uri.find('@') + 1);
+}
 
 bool Configuration::load() {
   // At first, set every configuration to default
@@ -68,7 +84,7 @@ void Configuration::_printConfig() {
   ESP_LOGI(TAG, "isWifiConfigured: %d", _config.isWifiConfigured);
   ESP_LOGI(TAG, "runSystemSettings: %d", _config.runSystemSettings);
   ESP_LOGI(TAG, "apn: %s", _config.apn.c_str());
-  ESP_LOGI(TAG, "mqttBrokerUrl: %s", _config.mqttBrokerUrl.c_str());
+  ESP_LOGI(TAG, "mqttBrokerUrl: %s", redactMqttUriForLog(_config.mqttBrokerUrl).c_str());
   ESP_LOGI(TAG, "httpDomain: %s", _config.httpDomain.c_str());
   ESP_LOGI(TAG, "coapDomain: %s", _config.coapDomain.c_str());
   ESP_LOGI(TAG, "extendedPmMeasures: %d", _config.extendedPmMeasures);
@@ -216,8 +232,9 @@ bool Configuration::parseRemoteConfig(const std::string &config) {
   if (root["mqttBrokerUrl"].is<const char *>()) {
     str_val = root["mqttBrokerUrl"].as<std::string>();
     if (_config.mqttBrokerUrl != str_val) {
-      ESP_LOGI(TAG, "mqttBrokerUrl value changed from %s to %s", _config.mqttBrokerUrl.c_str(),
-               str_val.c_str());
+      ESP_LOGI(TAG, "mqttBrokerUrl value changed from %s to %s",
+               redactMqttUriForLog(_config.mqttBrokerUrl).c_str(),
+               redactMqttUriForLog(str_val).c_str());
       _config.mqttBrokerUrl = str_val;
       _configChanged = true;
     }
@@ -732,7 +749,7 @@ void Configuration::setAPN(const std::string &apn) {
 }
 
 void Configuration::setCellularOperators(const std::string &operators, uint32_t operatorId,
-                                          uint32_t regFailCount) {
+                                         uint32_t regFailCount) {
   bool changed = false;
   if (_config.cellularOperators != operators) {
     ESP_LOGI(TAG, "Cellular operator list changed, saving it");
