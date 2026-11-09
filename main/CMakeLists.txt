@@ -5,6 +5,7 @@ set(srcs
   "PayloadCache.cpp"
   "GasIndex.cpp"
   "Configuration.cpp"
+  "CellularOperatorScanner.cpp"
   "AlphaSenseSensor.cpp"
 )
 
